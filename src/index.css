@@ -1,0 +1,254 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   LexiMaster 2.0 Design Tokens
+   Colours are RGB triplets so Tailwind can apply alpha: bg-accent/10.
+   Light and dark are tuned separately — dark is not an inversion of light.
+   ========================================================================== */
+@layer base {
+  :root {
+    color-scheme: light;
+
+    /* Surfaces — warm paper */
+    --canvas: 247 246 242;      /* page background */
+    --sunken: 240 238 232;      /* wells, tracks, inputs */
+    --surface: 255 255 255;     /* cards */
+    --elevated: 255 255 255;    /* popovers, modals */
+
+    /* Text */
+    --ink: 24 24 30;
+    --ink-2: 94 94 107;
+    --ink-3: 140 139 150;
+
+    /* Lines */
+    --line: 230 228 221;
+    --line-strong: 213 210 201;
+
+    /* Brand */
+    --accent: 79 70 229;        /* indigo 600, used sparingly */
+    --accent-soft: 238 237 253;
+    --accent-ink: 255 255 255;
+
+    /* Semantic */
+    --success: 22 145 88;  /* palette validated: success/accent/warning/danger pass CVD + normal-vision checks */
+    --success-soft: 230 245 236;
+    --warning: 194 144 10;      /* chart/mark amber (validated vs danger for CVD) */
+    --warning-ink: 150 101 0;   /* amber for text */
+    --warning-soft: 251 243 222;
+    --danger: 214 64 76;
+    --danger-soft: 252 235 236;
+
+    /* Secondary accents (unit identity) */
+    --sky: 14 128 190;
+    --sky-soft: 230 242 250;
+    --plum: 128 70 214;
+    --plum-soft: 242 236 252;
+
+    /* Radius */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+    --radius-2xl: 28px;
+
+    /* Elevation — soft, low-contrast */
+    --shadow-xs: 0 1px 1px rgb(24 24 40 / 0.04);
+    --shadow-sm: 0 1px 2px rgb(24 24 40 / 0.04), 0 2px 6px -2px rgb(24 24 40 / 0.05);
+    --shadow-md: 0 1px 2px rgb(24 24 40 / 0.04), 0 12px 28px -12px rgb(24 24 40 / 0.14);
+    --shadow-lg: 0 2px 6px rgb(24 24 40 / 0.05), 0 32px 64px -24px rgb(24 24 40 / 0.28);
+
+    /* Ambient focal gradient */
+    --ambient-a: 99 102 241;
+    --ambient-b: 251 191 136;
+    --ambient-strength: 0.10;
+
+    /* Layout */
+    --nav-h: 60px;
+    --tabbar-h: 64px;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    /* Surfaces — layered charcoal/midnight, never pure black */
+    --canvas: 12 13 17;
+    --sunken: 20 21 27;
+    --surface: 21 22 28;
+    --elevated: 28 29 37;
+
+    --ink: 237 237 242;
+    --ink-2: 163 163 176;
+    --ink-3: 112 113 128;
+
+    --line: 38 39 48;
+    --line-strong: 54 55 67;
+
+    --accent: 129 132 255;
+    --accent-soft: 34 35 68;
+    --accent-ink: 14 14 30;
+
+    --success: 63 166 115;
+    --success-soft: 20 44 33;
+    --warning: 180 138 34;
+    --warning-ink: 222 176 84;
+    --warning-soft: 48 37 18;
+    --danger: 232 92 122;
+    --danger-soft: 52 24 29;
+
+    --sky: 104 186 238;
+    --sky-soft: 18 38 54;
+    --plum: 178 148 250;
+    --plum-soft: 38 30 60;
+
+    --shadow-xs: 0 1px 0 rgb(255 255 255 / 0.02) inset;
+    --shadow-sm: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 2px 8px -2px rgb(0 0 0 / 0.5);
+    --shadow-md: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 16px 32px -12px rgb(0 0 0 / 0.6);
+    --shadow-lg: 0 1px 0 rgb(255 255 255 / 0.05) inset, 0 32px 72px -20px rgb(0 0 0 / 0.75);
+
+    --ambient-a: 99 102 241;
+    --ambient-b: 56 189 248;
+    --ambient-strength: 0.16;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  ::selection {
+    background: rgb(var(--accent) / 0.18);
+    color: rgb(var(--ink));
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent) / 0.55);
+    outline-offset: 2px;
+  }
+
+  button {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+}
+
+/* ==========================================================================
+   Component primitives
+   ========================================================================== */
+@layer components {
+  .card {
+    @apply bg-surface border border-line rounded-xl shadow-sm;
+  }
+
+  .card-interactive {
+    @apply card transition-[transform,box-shadow,border-color] duration-hover ease-out;
+  }
+  .card-interactive:hover {
+    @apply border-line-strong shadow-md;
+    transform: translateY(-2px);
+  }
+
+  .eyebrow {
+    @apply text-micro font-semibold uppercase text-ink-3;
+  }
+
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum', 'cv11';
+  }
+
+  .field {
+    @apply w-full rounded-md bg-sunken border border-transparent px-3 py-2.5 text-sm text-ink placeholder:text-ink-3
+      outline-none transition-[border-color,box-shadow,background-color] duration-hover;
+  }
+  .field:focus {
+    @apply bg-surface border-accent/50 shadow-focus;
+  }
+
+  .kbd {
+    @apply inline-flex items-center justify-center min-w-[1.5rem] h-5 px-1.5 rounded-[6px] border border-line-strong
+      bg-surface text-[11px] font-medium text-ink-2 font-sans shadow-xs;
+  }
+
+  .divider-dot::before {
+    content: '·';
+    @apply mx-1.5 text-ink-3;
+  }
+
+  .ambient {
+    background:
+      radial-gradient(60% 80% at 85% 10%, rgb(var(--ambient-a) / var(--ambient-strength)), transparent 70%),
+      radial-gradient(50% 60% at 100% 90%, rgb(var(--ambient-b) / calc(var(--ambient-strength) * 0.7)), transparent 70%);
+  }
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+}
+
+/* ==========================================================================
+   Theme transition — applied briefly when the user toggles the theme so that
+   backgrounds, borders and text cross-fade instead of snapping.
+   ========================================================================== */
+.theme-transition,
+.theme-transition *,
+.theme-transition *::before,
+.theme-transition *::after {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow !important;
+  transition-duration: 380ms !important;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1) !important;
+  transition-delay: 0ms !important;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--ink-3) / 0.28);
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--ink-3) / 0.5);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Respect reduced-motion everywhere CSS animates */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
