@@ -159,7 +159,19 @@ export function guardedRequest(url, { method = 'POST', headers = {}, body, timeo
         res.on('error', (e) => reject(new AIError('network', e.message)));
       }
     );
-    const onAbort = () => {
+    // Defence in depth: re-check the address actually connected to (covers every
+    // connection attempt, independent of the DNS lookup above).
+    req.on('socket', (socket) => {
+      const verify = () => {
+        const addr = socket.remoteAddress;
+        if (!allowPrivate && addr && isPrivateAddress(addr)) {
+          req.destroy(new AIError('blocked_address', '实际连接的地址是内网或保留地址，已断开。'));
+        }
+      };
+      socket.once('connect', verify);
+      socket.once('secureConnect', verify);
+    });
+        const onAbort = () => {
       req.destroy();
       reject(new AIError('cancelled', '请求已取消。'));
     };
@@ -167,7 +179,12 @@ export function guardedRequest(url, { method = 'POST', headers = {}, body, timeo
       if (signal.aborted) return onAbort();
       signal.addEventListener('abort', onAbort, { once: true });
     }
-    req.on('timeout', () => {
+    // Hard deadline for the whole exchange (the socket `timeout` below is only an idle timeout).
+    const deadline = setTimeout(() => {
+      req.destroy(new AIError('timeout', `请求超时（${Math.round(timeoutMs / 1000)} 秒）。`));
+    }, timeoutMs);
+    req.on('close', () => clearTimeout(deadline));
+        req.on('timeout', () => {
       req.destroy();
       reject(new AIError('timeout', `请求超时（${Math.round(timeoutMs / 1000)} 秒）。`));
     });

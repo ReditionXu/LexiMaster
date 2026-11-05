@@ -22,7 +22,7 @@ export const FRIENDLY: Record<string, string> = {
   proxy_rate_limited: '请求过于频繁，请稍后再试。',
   timeout: '请求超时。',
   network: '无法连接到 AI 服务。',
-  offline: '无法连接到本地 AI 代理（/api）。如果是静态部署（如 GitHub Pages），AI 功能不可用。',
+  offline: '无法连接到 AI 代理（/api）。请确认部署包含 Vercel Functions（api/ 目录），纯静态托管不支持 AI。',
   cancelled: '请求已取消。',
   invalid_output: 'AI 返回的内容未通过校验。',
 };
@@ -91,8 +91,8 @@ export async function checkProxy(): Promise<{ ok: boolean; serverManaged: { prov
   try {
     const r = await fetch('/api/health');
     if (!r.ok) return { ok: false, serverManaged: null };
-    const j = await r.json();
-    return { ok: !!j.ok, serverManaged: j.serverManaged ?? null };
+    const j = await r.json(); // an SPA fallback (index.html) fails here → not a proxy
+    return { ok: j?.ok === true && j?.service === 'leximaster-ai-proxy', serverManaged: j.serverManaged ?? null };
   } catch {
     return { ok: false, serverManaged: null };
   }

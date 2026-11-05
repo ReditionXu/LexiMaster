@@ -32,10 +32,52 @@ function readBody(req) {
   });
 }
 
+/**
+ * Body access that works both on plain Node (stream) and on Vercel Functions,
+ * where the platform may already have parsed the JSON into `req.body`.
+ */
+async function getBody(req) {
+  let pre;
+  try {
+    pre = req.body;
+  } catch {
+    throw new AIError('bad_request', '请求不是有效的 JSON。');
+  }
+  if (pre === undefined || pre === null) return readBody(req);
+  let obj = pre;
+  if (typeof pre === 'string' || Buffer.isBuffer(pre)) {
+    const text = pre.toString('utf8');
+    if (Buffer.byteLength(text) > MAX_BODY) throw new AIError('payload_too_large', '请求体过大。');
+    try {
+      obj = text ? JSON.parse(text) : {};
+    } catch {
+      throw new AIError('bad_request', '请求不是有效的 JSON。');
+    }
+  } else if (JSON.stringify(pre).length > MAX_BODY) {
+    throw new AIError('payload_too_large', '请求体过大。');
+  }
+  return obj && typeof obj === 'object' ? obj : {};
+}
+
+/** Client IP for rate limiting. Forwarded headers are only trusted behind a known proxy (Vercel). */
+function clientIp(req, trustProxy) {
+  if (trustProxy) {
+    const h = req.headers['x-vercel-forwarded-for'] || req.headers['x-real-ip'] || req.headers['x-forwarded-for'];
+    const first = String(Array.isArray(h) ? h[0] : h || '').split(',')[0].trim();
+    if (first) return first;
+  }
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
 function send(res, status, obj) {
   res.statusCode = status;
   res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.setHeader('cache-control', 'no-store');
+  // Never cache API responses anywhere: browser, Vercel edge, or Cloudflare.
+  res.setHeader('cache-control', 'no-store, private, max-age=0');
+  res.setHeader('cdn-cache-control', 'no-store');
+  res.setHeader('cloudflare-cdn-cache-control', 'no-store');
+  res.setHeader('vercel-cdn-cache-control', 'no-store');
+  res.setHeader('pragma', 'no-cache');
   res.setHeader('x-content-type-options', 'nosniff');
   res.end(JSON.stringify(obj));
 }
@@ -69,6 +111,7 @@ export function createAIHandler({ env = process.env, call = callProvider } = {})
   const allowPrivate = env.LEXIMASTER_ALLOW_PRIVATE_BASE_URL === '1';
   const managed = serverManagedConfig(env);
   const limit = makeLimiter(Number(env.LEXIMASTER_AI_RATE_LIMIT || 60));
+  const trustProxy = env.VERCEL === '1' || env.LEXIMASTER_TRUST_PROXY === '1';
 
   return async function aiHandler(req, res, next) {
     const url = (req.originalUrl || req.url || '').split('?')[0];
@@ -80,6 +123,7 @@ export function createAIHandler({ env = process.env, call = callProvider } = {})
         service: 'leximaster-ai-proxy',
         serverManaged: managed ? { provider: managed.provider, model: managed.model } : null,
         allowPrivateBaseUrl: allowPrivate,
+        runtime: env.VERCEL === '1' ? 'vercel' : 'node',
       });
     }
 
@@ -90,7 +134,7 @@ export function createAIHandler({ env = process.env, call = callProvider } = {})
     if (!String(req.headers['content-type'] || '').includes('application/json')) {
       return send(res, 415, { error: { code: 'bad_request', message: '需要 application/json' } });
     }
-    const ip = (req.socket && req.socket.remoteAddress) || 'unknown';
+    const ip = clientIp(req, trustProxy);
     if (!limit(ip)) return send(res, 429, { error: { code: 'proxy_rate_limited', message: '请求过于频繁，请稍后再试。', retryAfter: 30 } });
 
     const task = m[1];
@@ -100,7 +144,7 @@ export function createAIHandler({ env = process.env, call = callProvider } = {})
       if (!res.writableEnded) controller.abort();
     });
     try {
-      const body = await readBody(req);
+      const body = await getBody(req);
       let cfg;
       if (body?.config?.useServerKey) {
         if (!managed) throw new AIError('not_configured', '服务端未配置托管密钥。');

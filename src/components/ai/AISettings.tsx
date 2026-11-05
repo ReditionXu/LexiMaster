@@ -96,7 +96,7 @@ export const AISettingsPage: React.FC<{ onBack?: () => void }> = ({ onBack }) =>
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning-ink" />
           <div>
             <div className="font-medium text-ink">未检测到 AI 代理服务</div>
-            当前页面似乎是静态部署（例如 GitHub Pages），无法安全地转发 AI 请求。请使用 <code className="rounded bg-sunken px-1">npm run dev</code> 或 <code className="rounded bg-sunken px-1">npm start</code> 运行。
+            <code className="rounded bg-sunken px-1">/api/health</code> 没有返回代理响应，AI 请求无法转发。Vercel 部署请确认项目根目录包含 <code className="rounded bg-sunken px-1">api/</code> 与 <code className="rounded bg-sunken px-1">vercel.json</code> 并重新部署；本地请使用 <code className="rounded bg-sunken px-1">npm run dev</code> 或 <code className="rounded bg-sunken px-1">npm start</code>。GitHub Pages 等纯静态托管不支持 AI。
           </div>
         </motion.div>
       )}

@@ -75,7 +75,10 @@ npm start            # 默认 http://127.0.0.1:8787 ，可用 PORT / HOST 环境
 ```
 `npm start` 会同时提供前端页面与 `/api` AI 代理，可部署到任何能运行 Node 的平台（云服务器、Render、Railway、Fly.io 等），建议放在 HTTPS 反向代理之后。可选的服务端托管密钥等配置见 `.env.example`。
 
-### 3. 纯静态部署
+### 3. 部署到 Vercel（推荐，含 AI）
+仓库已包含 `api/`（Vercel Functions）与 `vercel.json`。在 Vercel 导入此 GitHub 仓库，或推送到已连接的仓库，即可自动构建前端并部署 `/api/ai/*`。用户直接访问网站、在「AI 设置」中填写自己的 API Key 即可使用，无需本地运行。详见 [docs/AI.md](docs/AI.md#6-部署到-vercel)。
+
+### 4. 纯静态部署
 `dist/` 仍可直接托管到 GitHub Pages / Netlify 等静态服务，但这种方式没有服务端代理，**AI 功能不可用**（设置页会提示），其余功能完全正常。
 
 ---

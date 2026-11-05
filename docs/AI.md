@@ -102,7 +102,39 @@ payload：
 
 不通过的词在后续批次中重试 1 次，仍失败则使用该词的题库原题（标注「题库原题」及原因）。
 
-## 6. 本地联调（无需真实 Key）
+## 6. 部署到 Vercel
+
+项目根目录的 `api/` 即 Vercel Functions，与本地开发、`npm start` 共用同一个 `server/ai/handler.mjs`：
+
+| 文件 | 路由 |
+| --- | --- |
+| `api/health.js` | `GET /api/health` |
+| `api/ai/[task].js` | `POST /api/ai/test · generate · explain · report` |
+
+`vercel.json`：
+
+- `framework: vite`、`outputDirectory: dist`；函数 `maxDuration: 60s`（AI 生成最长 45s 超时）。
+- SPA 回退规则 `/((?!api/|assets/).*) → /index.html`，**不会**把 `/api/*` 或静态资源改写成 `index.html`。
+- `/api/*` 响应 `Cache-Control: no-store`；页面响应 CSP、`X-Frame-Options: DENY` 等安全头。
+
+部署步骤：把代码推送到已连接 Vercel 的 GitHub 仓库即可自动部署；或 `npx vercel --prod`。无需配置任何环境变量——每位用户在「AI 设置」中填写自己的 Key。可选的服务端托管密钥在 Vercel 项目 Settings → Environment Variables 中配置 `AI_PROVIDER / AI_MODEL / AI_API_KEY`（**不要**加 `VITE_` 前缀）。
+
+Vercel 上的限制：
+
+- 函数无状态：每个请求只使用请求体中的配置，结束即丢弃，不同用户的 Key 不会混用；Key 不出现在 URL（Gemini 也使用请求头）中，代理不记录请求体。
+- 代理限流是**单实例内存计数**（按 Vercel 提供的客户端 IP），多实例之间不共享，只能作为基础防护；真正的调用次数上限由客户端每日预算、每场练习请求上限与服务商自身限额共同保证。如需严格全局限流，可接入 Vercel KV / Upstash。
+- SSRF 防护在每次建立连接时校验解析出的全部 IP，并在连接建立后再次校验实际对端地址；不跟随重定向。
+
+### Cloudflare（自定义域名 www.campuseng.icu）
+
+已实测：自定义域名经 Cloudflare 代理（橙色云）转发到 Vercel，`/api/*` 的 `cf-cache-status` 为 `DYNAMIC`（未缓存）。保持以下设置：
+
+- DNS：`www` CNAME → `cname.vercel-dns.com`（或 Vercel 后台给出的值）。代理开启或仅 DNS 都可以；开启代理时 SSL/TLS 模式必须为 **Full (strict)**，否则会出现重定向循环。
+- 缓存：不要为 `/api/*` 配置 “Cache Everything” 规则。代理已在响应中同时下发 `Cache-Control: no-store, private`、`CDN-Cache-Control: no-store`、`Cloudflare-CDN-Cache-Control: no-store`，即使存在宽泛的缓存规则也不会被 Cloudflare 缓存。
+- 安全：若开启 Bot Fight Mode / WAF 托管质询，确保对 `POST /api/ai/*` 不弹出 JS Challenge（浏览器 fetch 无法完成质询，会表现为请求失败）。
+- 不要开启 Rocket Loader（会改写内联脚本，可能影响主题初始化脚本）。
+
+## 7. 本地联调（无需真实 Key）
 
 ```bash
 node scripts/mock-ai-server.mjs                      # 模拟 OpenAI 兼容接口 :4300
