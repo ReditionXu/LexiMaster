@@ -4,16 +4,21 @@ import {
   UserAnswerRecord,
   ExamSessionResult,
   OverallStats,
-  MasteryLevel,
+  Unit,
 } from '../types';
 import { DEFAULT_QUESTIONS } from '../data/defaultQuestions';
+import { migrateSnapshot, seedToQuestions, SCHEMA_VERSION } from '../lib/migration';
 
-const STORAGE_KEYS = {
+export const STORAGE_KEYS = {
   QUESTIONS: 'leximaster_questions_v2', // bumped to v2 for full 125-word official curriculum
   MASTERY: 'leximaster_mastery_v1',
   HISTORY: 'leximaster_history_v1',
   EXAMS: 'leximaster_exams_v1',
   SETTINGS: 'leximaster_settings_v1',
+  UNITS: 'leximaster_units_v1',
+  SCHEMA: 'leximaster_schema_version',
+  BACKUP_PRE_V3: 'leximaster_backup_pre_v3',
+  ACTIVE_EXAM: 'leximaster_active_exam_v1',
 };
 
 // Safe localStorage access with error boundary
@@ -36,13 +41,67 @@ function safeSet<T>(key: string, value: T): void {
 }
 
 /**
+ * Schema migration (v1/v2 → v3 dynamic units).
+ * Runs once on startup and after restoring a backup. Before changing anything it
+ * keeps a verbatim copy of the old data under BACKUP_PRE_V3.
+ */
+export function ensureMigrated(): { migrated: boolean; report?: ReturnType<typeof migrateSnapshot>['report'] } {
+  const version = Number(safeGet<number>(STORAGE_KEYS.SCHEMA, 0));
+  let rawQuestions = safeGet<any[] | null>(STORAGE_KEYS.QUESTIONS, null);
+  const units = safeGet<Unit[] | null>(STORAGE_KEYS.UNITS, null);
+
+  // First run ever: seed the default bank directly in v3 shape.
+  if (!rawQuestions || rawQuestions.length === 0) {
+    if (units && units.length > 0 && version >= SCHEMA_VERSION) return { migrated: false };
+    const seeded = seedToQuestions(DEFAULT_QUESTIONS, units ?? []);
+    safeSet(STORAGE_KEYS.UNITS, seeded.units);
+    safeSet(STORAGE_KEYS.QUESTIONS, seeded.questions);
+    safeSet(STORAGE_KEYS.SCHEMA, SCHEMA_VERSION);
+    return { migrated: false };
+  }
+
+  const history = safeGet<UserAnswerRecord[]>(STORAGE_KEYS.HISTORY, []);
+  const exams = safeGet<ExamSessionResult[]>(STORAGE_KEYS.EXAMS, []);
+  const result = migrateSnapshot({ questions: rawQuestions, units, history, exams });
+  if (!result.changed && version >= SCHEMA_VERSION) return { migrated: false };
+
+  if (version < SCHEMA_VERSION && !localStorage.getItem(STORAGE_KEYS.BACKUP_PRE_V3)) {
+    safeSet(STORAGE_KEYS.BACKUP_PRE_V3, {
+      backedUpAt: new Date().toISOString(),
+      fromVersion: version || 2,
+      questions: rawQuestions,
+      history,
+      exams,
+      mastery: safeGet(STORAGE_KEYS.MASTERY, {}),
+    });
+  }
+  safeSet(STORAGE_KEYS.UNITS, result.units);
+  safeSet(STORAGE_KEYS.QUESTIONS, result.questions);
+  safeSet(STORAGE_KEYS.HISTORY, result.history);
+  safeSet(STORAGE_KEYS.EXAMS, result.exams);
+  safeSet(STORAGE_KEYS.SCHEMA, SCHEMA_VERSION);
+  return { migrated: true, report: result.report };
+}
+
+/**
+ * Units
+ */
+export function getStoredUnits(): Unit[] {
+  return safeGet<Unit[]>(STORAGE_KEYS.UNITS, []);
+}
+
+export function saveStoredUnits(units: Unit[]): void {
+  safeSet(STORAGE_KEYS.UNITS, units);
+}
+
+/**
  * Question Bank management
  */
 export function getStoredQuestions(): VocabularyQuestion[] {
   const stored = safeGet<VocabularyQuestion[] | null>(STORAGE_KEYS.QUESTIONS, null);
   if (!stored || stored.length === 0) {
-    safeSet(STORAGE_KEYS.QUESTIONS, DEFAULT_QUESTIONS);
-    return DEFAULT_QUESTIONS;
+    ensureMigrated();
+    return safeGet<VocabularyQuestion[]>(STORAGE_KEYS.QUESTIONS, []);
   }
   return stored;
 }
@@ -51,9 +110,35 @@ export function saveStoredQuestions(questions: VocabularyQuestion[]): void {
   safeSet(STORAGE_KEYS.QUESTIONS, questions);
 }
 
-export function resetQuestionsToDefault(): VocabularyQuestion[] {
-  safeSet(STORAGE_KEYS.QUESTIONS, DEFAULT_QUESTIONS);
-  return DEFAULT_QUESTIONS;
+/**
+ * Restore the default textbook bank. Custom units and their words are kept;
+ * the original Unit 1–4 are re-created (or un-archived/un-trashed) as needed.
+ */
+export function resetQuestionsToDefault(): { questions: VocabularyQuestion[]; units: Unit[] } {
+  const current = getStoredUnits().map((u) =>
+    u.legacyNumber ? { ...u, archived: false, deletedAt: undefined, updatedAt: Date.now() } : u
+  );
+  const seeded = seedToQuestions(DEFAULT_QUESTIONS, current);
+  const legacyIds = new Set(seeded.units.filter((u) => u.legacyNumber).map((u) => u.id));
+  const others = getStoredQuestions().filter((q) => !legacyIds.has(q.unitId));
+  const questions = [...seeded.questions, ...others];
+  safeSet(STORAGE_KEYS.UNITS, seeded.units);
+  safeSet(STORAGE_KEYS.QUESTIONS, questions);
+  return { questions, units: seeded.units };
+}
+
+/**
+ * In-progress exam (public paper + answers only; the answer key is never stored here).
+ */
+export function getActiveExam<T>(): T | null {
+  return safeGet<T | null>(STORAGE_KEYS.ACTIVE_EXAM, null);
+}
+export function saveActiveExam<T>(state: T | null): void {
+  if (state === null) {
+    try {
+      localStorage.removeItem(STORAGE_KEYS.ACTIVE_EXAM);
+    } catch {}
+  } else safeSet(STORAGE_KEYS.ACTIVE_EXAM, state);
 }
 
 /**
@@ -183,8 +268,10 @@ export function computeOverallStats(
  */
 export function exportAllDataAsJSON(): string {
   const data = {
-    version: '1.0',
+    version: '3.0',
     exportTime: new Date().toISOString(),
+    schemaVersion: SCHEMA_VERSION,
+    units: getStoredUnits(),
     questions: getStoredQuestions(),
     mastery: getStoredMasteryRecords(),
     history: getStoredAnswerHistory(),
@@ -205,6 +292,9 @@ export function importAllDataFromJSON(jsonStr: string): { success: boolean; mess
 
     if (Array.isArray(parsed.questions)) {
       safeSet(STORAGE_KEYS.QUESTIONS, parsed.questions);
+      // Old (v1/v2) backups have no units: drop current units so the migration rebuilds them.
+      safeSet(STORAGE_KEYS.UNITS, Array.isArray(parsed.units) ? parsed.units : []);
+      safeSet(STORAGE_KEYS.SCHEMA, Array.isArray(parsed.units) ? SCHEMA_VERSION : 2);
     }
     if (parsed.mastery && typeof parsed.mastery === 'object') {
       safeSet(STORAGE_KEYS.MASTERY, parsed.mastery);
@@ -216,6 +306,7 @@ export function importAllDataFromJSON(jsonStr: string): { success: boolean; mess
       safeSet(STORAGE_KEYS.EXAMS, parsed.exams);
     }
 
+    ensureMigrated();
     return { success: true, message: '数据恢复成功！' };
   } catch (e: any) {
     return { success: false, message: `解析失败: ${e.message}` };

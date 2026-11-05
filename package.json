@@ -1,12 +1,14 @@
 {
   "name": "leximaster",
   "private": true,
-  "version": "1.0.0",
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "start": "node server/index.mjs"
   },
   "dependencies": {
     "canvas-confetti": "^1.9.4",
@@ -26,6 +28,10 @@
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=18.17"
   }
 }

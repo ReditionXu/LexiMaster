@@ -14,20 +14,30 @@ const BLANK_REGEX = /_{3,}|\{blank\}|\[blank\]/g;
 /**
  * Validates and normalizes a single question row
  */
+/**
+ * Maps an import row's unit reference (target unit, a number like 3, "Unit 3", or a unit name)
+ * to a stable unit ID. There is no limit on how many units exist.
+ */
+export type UnitResolver = (ref: unknown, rowIndex: number) => string | undefined;
+
 export function validateQuestionRow(
   raw: any,
   index: number,
-  existingIds: Set<string>
+  existingIds: Set<string>,
+  resolveUnit?: UnitResolver
 ): { question?: VocabularyQuestion; error?: string } {
   if (!raw || typeof raw !== 'object') {
     return { error: `第 ${index + 1} 行数据格式错误，不是有效的对象。` };
   }
 
-  // Unit validation
-  const unitNum = Number(raw.unit);
-  if (!unitNum || isNaN(unitNum) || unitNum < 1 || unitNum > 20) {
-    return { error: `第 ${index + 1} 行缺少有效单元编号 unit (需为正整数，如 1 或 2)。` };
+  // Unit resolution (dynamic — no fixed number of units)
+  const unitRef = raw.unitId ?? raw.unit ?? raw.unitName;
+  const unitId = resolveUnit?.(unitRef, index);
+  if (!unitId) {
+    return { error: `第 ${index + 1} 行无法确定所属单元（unit 列为空或无效），请选择导入目标单元或填写单元名称/编号。` };
   }
+  const legacyNum = Number(String(unitRef ?? '').replace(/^unit\s*/i, ''));
+  const unitTag = Number.isInteger(legacyNum) && legacyNum > 0 ? `U${legacyNum}` : 'U';
 
   // Word base form
   const word = String(raw.word || '').trim();
@@ -93,7 +103,7 @@ export function validateQuestionRow(
   // ID handling: prevent duplicate IDs
   let id = String(raw.id || '').trim();
   if (!id || existingIds.has(id)) {
-    id = `U${unitNum}-${word.slice(0, 4).toUpperCase()}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
+    id = `${unitTag}-${word.slice(0, 4).toUpperCase()}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
   }
   existingIds.add(id);
 
@@ -102,7 +112,7 @@ export function validateQuestionRow(
 
   const question: VocabularyQuestion = {
     id,
-    unit: unitNum,
+    unitId,
     word,
     sentence: standardizedSentence,
     chineseHint,
@@ -125,7 +135,8 @@ export function validateQuestionRow(
  */
 export function parseJSONQuestions(
   jsonText: string,
-  existingQuestions: VocabularyQuestion[]
+  existingQuestions: VocabularyQuestion[],
+  resolveUnit?: UnitResolver
 ): ImportValidationResult {
   const result: ImportValidationResult = {
     validQuestions: [],
@@ -148,7 +159,7 @@ export function parseJSONQuestions(
   const existingIds = new Set(existingQuestions.map((q) => q.id));
 
   items.forEach((item: any, idx: number) => {
-    const { question, error } = validateQuestionRow(item, idx, existingIds);
+    const { question, error } = validateQuestionRow(item, idx, existingIds, resolveUnit);
     if (error) {
       result.errors.push({ row: idx + 1, reason: error, rawData: item });
     } else if (question) {
@@ -164,7 +175,8 @@ export function parseJSONQuestions(
  */
 export function parseCSVQuestions(
   csvText: string,
-  existingQuestions: VocabularyQuestion[]
+  existingQuestions: VocabularyQuestion[],
+  resolveUnit?: UnitResolver
 ): ImportValidationResult {
   const result: ImportValidationResult = {
     validQuestions: [],
@@ -186,7 +198,7 @@ export function parseCSVQuestions(
   const existingIds = new Set(existingQuestions.map((q) => q.id));
 
   rawRows.forEach((row, idx) => {
-    const { question, error } = validateQuestionRow(row, idx, existingIds);
+    const { question, error } = validateQuestionRow(row, idx, existingIds, resolveUnit);
     if (error) {
       result.errors.push({ row: idx + 1, reason: error, rawData: row });
     } else if (question) {
@@ -202,7 +214,8 @@ export function parseCSVQuestions(
  */
 export function parseExcelQuestions(
   fileBuffer: ArrayBuffer,
-  existingQuestions: VocabularyQuestion[]
+  existingQuestions: VocabularyQuestion[],
+  resolveUnit?: UnitResolver
 ): ImportValidationResult {
   const result: ImportValidationResult = {
     validQuestions: [],
@@ -225,7 +238,7 @@ export function parseExcelQuestions(
     const existingIds = new Set(existingQuestions.map((q) => q.id));
 
     rawRows.forEach((row, idx) => {
-      const { question, error } = validateQuestionRow(row, idx, existingIds);
+      const { question, error } = validateQuestionRow(row, idx, existingIds, resolveUnit);
       if (error) {
         result.errors.push({ row: idx + 2, reason: error, rawData: row }); // Excel is 1-indexed header + 1
       } else if (question) {
@@ -242,10 +255,14 @@ export function parseExcelQuestions(
 /**
  * Export Question Bank to XLSX
  */
-export function exportQuestionsToExcel(questions: VocabularyQuestion[], filename = 'LexiMaster_Vocabulary.xlsx') {
+export function exportQuestionsToExcel(
+  questions: VocabularyQuestion[],
+  filename = 'LexiMaster_Vocabulary.xlsx',
+  unitName: (id: string) => string = (id) => id
+) {
   const rows = questions.map((q) => ({
     id: q.id,
-    unit: q.unit,
+    unit: unitName(q.unitId),
     word: q.word,
     sentence: q.sentence,
     chineseHint: q.chineseHint,
@@ -268,10 +285,14 @@ export function exportQuestionsToExcel(questions: VocabularyQuestion[], filename
 /**
  * Export Question Bank to CSV
  */
-export function exportQuestionsToCSV(questions: VocabularyQuestion[], filename = 'LexiMaster_Vocabulary.csv') {
+export function exportQuestionsToCSV(
+  questions: VocabularyQuestion[],
+  filename = 'LexiMaster_Vocabulary.csv',
+  unitName: (id: string) => string = (id) => id
+) {
   const rows = questions.map((q) => ({
     id: q.id,
-    unit: q.unit,
+    unit: unitName(q.unitId),
     word: q.word,
     sentence: q.sentence,
     chineseHint: q.chineseHint,
@@ -302,7 +323,7 @@ export function exportQuestionsToCSV(questions: VocabularyQuestion[], filename =
 export function downloadVocabularyTemplate(format: 'xlsx' | 'csv' = 'xlsx') {
   const sampleRows = [
     {
-      unit: 1,
+      unit: 'Unit 1',
       word: 'achieve',
       sentence: 'She finally _____ her dream of becoming a surgeon.',
       chineseHint: '实现',
@@ -316,7 +337,7 @@ export function downloadVocabularyTemplate(format: 'xlsx' | 'csv' = 'xlsx') {
       phonetic: '/əˈtʃiːv/',
     },
     {
-      unit: 1,
+      unit: 'Unit 1',
       word: 'reduce',
       sentence: 'The council adopted strict guidelines to _____ energy waste.',
       chineseHint: '减少',
@@ -330,7 +351,7 @@ export function downloadVocabularyTemplate(format: 'xlsx' | 'csv' = 'xlsx') {
       phonetic: '/rɪˈdjuːs/',
     },
     {
-      unit: 2,
+      unit: 'Unit 2',
       word: 'sustain',
       sentence: 'Green innovation provides _____ solutions for long-term urban growth.',
       chineseHint: '可持续的',

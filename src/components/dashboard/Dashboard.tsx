@@ -13,10 +13,8 @@ import {
 } from '../../types';
 import { evaluateAnswer, calculateMastery } from '../../utils/grammarEngine';
 import {
-  getAvailableUnits,
   getDailyActivity,
   getStreakDays,
-  getUnitMeta,
   getUnitMetrics,
   MASTERY_META,
   relativeTime,
@@ -26,9 +24,17 @@ import { Button } from '../ui/Button';
 import { AnimatedNumber, ProgressRing, Sparkline, StackedBar } from '../ui/DataViz';
 import { SectionTitle } from '../ui/Common';
 import { ClozeLine } from '../sentence/SentenceClozeInput';
+import { activeUnits, unitDisplay, unitLabel, unitTone } from '../../lib/units';
+import type { Unit } from '../../types';
 
 interface DashboardProps {
   questions: VocabularyQuestion[];
+  units: Unit[];
+  /** Shown when an exam was interrupted (e.g. by a refresh). */
+  pendingExam?: { title: string; answered: number; total: number } | null;
+  onResumeExam?: () => void;
+  onDiscardExam?: () => void;
+  onOpenAIPractice?: () => void;
   masteryRecords: Record<string, WordMasteryRecord>;
   history: UserAnswerRecord[];
   exams: ExamSessionResult[];
@@ -48,6 +54,11 @@ const toneVar: Record<string, string> = {
 
 export const Dashboard: React.FC<DashboardProps> = ({
   questions,
+  units: allUnits,
+  pendingExam,
+  onResumeExam,
+  onDiscardExam,
+  onOpenAIPractice,
   masteryRecords,
   history,
   stats,
@@ -56,18 +67,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onNavigate,
   onRecordAnswer,
 }) => {
-  const units = getAvailableUnits(questions);
-  const featured = units.filter((u) => u === 1 || u === 2);
-  const extended = units.filter((u) => u !== 1 && u !== 2);
+  const unitList = activeUnits(allUnits);
+  const units = unitList.map((u) => u.id);
+  // The first two units (by the user's own ordering) are featured — no hardcoded unit numbers.
+  const featured = units.slice(0, 2);
+  const extended = units.slice(2);
   const streak = useMemo(() => getStreakDays(history), [history]);
   const today = new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' });
 
   const startMidterm = () =>
-    onStartPractice({ mode: 'practice', units: featured.length ? featured : units, questionCount: 0, order: 'random', timed: false });
+    onStartPractice({ mode: 'practice', unitIds: featured.length ? featured : units, questionCount: 0, order: 'random', timed: false });
   const startMock = () =>
     onStartExam({
       mode: 'exam',
-      units: featured.length ? featured : units,
+      unitIds: featured.length ? featured : units,
       questionCount: 20,
       order: 'random',
       timed: true,
@@ -76,6 +89,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <motion.div variants={staggerContainer(0.06)} initial="initial" animate="animate" className="flex flex-col gap-10 sm:gap-12">
+      {pendingExam && (
+        <motion.div
+          variants={riseIn}
+          className="order-0 flex flex-col gap-3 rounded-xl border border-accent/30 bg-accent-soft/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:order-none"
+          role="status"
+        >
+          <div className="text-[14px] text-ink">
+            <span className="font-semibold">有一场未完成的模拟考试</span>
+            <span className="ml-2 text-ink-2">
+              {pendingExam.title} · 已答 {pendingExam.answered}/{pendingExam.total}
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="ghost" onClick={onDiscardExam}>
+              放弃
+            </Button>
+            <Button size="sm" variant="primary" onClick={onResumeExam} trailing={<ArrowRight />} nudge>
+              继续考试
+            </Button>
+          </div>
+        </motion.div>
+      )}
+
       {/* ------------------------------------------------------------------ Hero */}
       <section className="contents lg:order-1 lg:grid lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14 lg:pt-2">
         <motion.div variants={riseIn} className="order-1 lg:order-none">
@@ -114,16 +150,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </Button>
           </div>
           <p className="mt-5 text-[12.5px] text-ink-3">
-            默认练习期中重点 Unit 1 &amp; 2 · 模考 20 题 / 15 分钟 ·{' '}
+            默认练习前两个单元 · 模考 20 题 / 15 分钟 ·{' '}
             <button onClick={() => onNavigate('practice-setup')} className="underline decoration-line-strong underline-offset-4 hover:text-ink">
               自定义
             </button>
+            {onOpenAIPractice && (
+              <>
+                {' · '}
+                <button onClick={onOpenAIPractice} className="underline decoration-line-strong underline-offset-4 hover:text-ink">
+                  AI 智能出题
+                </button>
+              </>
+            )}
           </p>
         </motion.div>
 
         <motion.div variants={riseIn} className="order-4 lg:order-none">
           <QuickCheck
             questions={questions}
+            units={allUnits}
+            featured={featured}
             masteryRecords={masteryRecords}
             stats={stats}
             onRecordAnswer={onRecordAnswer}
@@ -157,16 +203,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
           {featured.map((u) => (
             <UnitCard
               key={u}
-              unit={u}
+              unit={unitList.find((x) => x.id === u)!}
+              index={unitList.findIndex((x) => x.id === u)}
+              tone={unitTone(allUnits, u)}
               questions={questions}
               masteryRecords={masteryRecords}
               onPractice={() =>
-                onStartPractice({ mode: 'practice', units: [u], questionCount: 0, order: 'sequential', timed: false })
+                onStartPractice({ mode: 'practice', unitIds: [u], questionCount: 0, order: 'sequential', timed: false })
               }
               onExam={(total) =>
                 onStartExam({
                   mode: 'exam',
-                  units: [u],
+                  unitIds: [u],
                   questionCount: Math.min(total, 20),
                   order: 'random',
                   timed: true,
@@ -180,10 +228,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
             masteryRecords={masteryRecords}
             units={units}
             onPractice={() =>
-              onStartPractice({ mode: 'practice', units, questionCount: 0, order: 'random', timed: false })
+              onStartPractice({ mode: 'practice', unitIds: units, questionCount: 0, order: 'random', timed: false })
             }
             onExam={() =>
-              onStartExam({ mode: 'exam', units, questionCount: 30, order: 'random', timed: true, timeLimitMinutes: 20 })
+              onStartExam({ mode: 'exam', unitIds: units, questionCount: 30, order: 'random', timed: true, timeLimitMinutes: 20 })
             }
           />
         </div>
@@ -195,11 +243,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
               {extended.map((u) => (
                 <CompactUnitRow
                   key={u}
-                  unit={u}
+                  unit={unitList.find((x) => x.id === u)!}
+                  index={unitList.findIndex((x) => x.id === u)}
                   questions={questions}
                   masteryRecords={masteryRecords}
                   onPractice={() =>
-                    onStartPractice({ mode: 'practice', units: [u], questionCount: 0, order: 'sequential', timed: false })
+                    onStartPractice({ mode: 'practice', unitIds: [u], questionCount: 0, order: 'sequential', timed: false })
                   }
                 />
               ))}
@@ -217,10 +266,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
    ========================================================================== */
 const QuickCheck: React.FC<{
   questions: VocabularyQuestion[];
+  units: Unit[];
+  featured: string[];
   masteryRecords: Record<string, WordMasteryRecord>;
   stats: OverallStats;
   onRecordAnswer: DashboardProps['onRecordAnswer'];
-}> = ({ questions, masteryRecords, stats, onRecordAnswer }) => {
+}> = ({ questions, units, featured, masteryRecords, stats, onRecordAnswer }) => {
   const [seed, setSeed] = useState(0);
   const [value, setValue] = useState('');
   const [evaluation, setEvaluation] = useState<AnswerEvaluation | null>(null);
@@ -234,7 +285,7 @@ const QuickCheck: React.FC<{
     const tiers = [
       questions.filter((q) => lvl(q) === 'weak'),
       questions.filter((q) => lvl(q) === 'learning'),
-      questions.filter((q) => lvl(q) === 'untested' && (q.unit === 1 || q.unit === 2)),
+      questions.filter((q) => lvl(q) === 'untested' && featured.includes(q.unitId)),
       questions.filter((q) => lvl(q) === 'untested'),
       questions,
     ];
@@ -290,7 +341,7 @@ const QuickCheck: React.FC<{
             </span>
             <span className="eyebrow !text-ink-2">Quick check</span>
             <span className="text-[12px] text-ink-3">
-              Unit {question.unit} · {question.partOfSpeech}
+              {unitLabel(units, question.unitId)} · {question.partOfSpeech}
             </span>
           </div>
           <button
@@ -531,15 +582,17 @@ const StatsStrip: React.FC<{
    Unit cards
    ========================================================================== */
 const UnitCard: React.FC<{
-  unit: number;
+  unit: Unit;
+  index: number;
+  tone: string;
   questions: VocabularyQuestion[];
   masteryRecords: Record<string, WordMasteryRecord>;
   onPractice: () => void;
   onExam: (total: number) => void;
-}> = ({ unit, questions, masteryRecords, onPractice, onExam }) => {
-  const m = getUnitMetrics(questions, masteryRecords, unit);
-  const meta = getUnitMeta(unit);
-  const color = toneVar[meta.tone];
+}> = ({ unit, index, tone, questions, masteryRecords, onPractice, onExam }) => {
+  const m = getUnitMetrics(questions, masteryRecords, unit.id);
+  const meta = unitDisplay(unit, index);
+  const color = toneVar[tone];
   const disabled = m.total === 0;
 
   return (
@@ -548,7 +601,7 @@ const UnitCard: React.FC<{
         onClick={onPractice}
         disabled={disabled}
         className="absolute inset-0 z-0 rounded-xl focus-visible:outline-offset-[-2px]"
-        aria-label={`开始练习 Unit ${unit}`}
+        aria-label={`开始练习 ${unit.name}`}
       />
       <span
         aria-hidden
@@ -558,10 +611,10 @@ const UnitCard: React.FC<{
       <div className="pointer-events-none relative flex items-start justify-between">
         <div>
           <div className="eyebrow" style={{ color }}>
-            Unit
+            {meta.eyebrow}
           </div>
           <div className="num font-serif text-[52px] font-medium leading-[0.95] tracking-[-0.03em] text-ink">
-            {String(unit).padStart(2, '0')}
+            {meta.numeral}
           </div>
         </div>
         <ProgressRing value={m.masteryRatio} size={48} stroke={4} color={color}>
@@ -570,8 +623,8 @@ const UnitCard: React.FC<{
       </div>
 
       <div className="pointer-events-none relative mt-5">
-        <h3 className="font-serif text-[21px] font-medium leading-tight tracking-[-0.01em] text-ink">{meta.title}</h3>
-        <p className="mt-1 text-[13px] text-ink-2">{meta.subtitle}</p>
+        <h3 className="line-clamp-2 font-serif text-[21px] font-medium leading-tight tracking-[-0.01em] text-ink">{meta.title}</h3>
+        <p className="mt-1 min-h-[1.25rem] truncate text-[13px] text-ink-2">{meta.subtitle}</p>
       </div>
 
       <div className="pointer-events-none relative mt-5 grid grid-cols-3 gap-3 text-[12px] text-ink-3">
@@ -624,7 +677,7 @@ const UnitCard: React.FC<{
 const MixedCard: React.FC<{
   questions: VocabularyQuestion[];
   masteryRecords: Record<string, WordMasteryRecord>;
-  units: number[];
+  units: string[];
   onPractice: () => void;
   onExam: () => void;
 }> = ({ questions, masteryRecords, units, onPractice, onExam }) => {
@@ -699,13 +752,14 @@ const MixedCard: React.FC<{
 };
 
 const CompactUnitRow: React.FC<{
-  unit: number;
+  unit: Unit;
+  index: number;
   questions: VocabularyQuestion[];
   masteryRecords: Record<string, WordMasteryRecord>;
   onPractice: () => void;
-}> = ({ unit, questions, masteryRecords, onPractice }) => {
-  const m = getUnitMetrics(questions, masteryRecords, unit);
-  const meta = getUnitMeta(unit);
+}> = ({ unit, index, questions, masteryRecords, onPractice }) => {
+  const m = getUnitMetrics(questions, masteryRecords, unit.id);
+  const meta = unitDisplay(unit, index);
   return (
     <button
       onClick={onPractice}
@@ -713,7 +767,7 @@ const CompactUnitRow: React.FC<{
       className="card-interactive group flex items-center gap-4 p-4 text-left"
     >
       <span className="num w-10 font-serif text-[28px] font-medium leading-none text-ink-2">
-        {String(unit).padStart(2, '0')}
+        {meta.numeral}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[14.5px] font-medium text-ink">{meta.title}</span>

@@ -26,11 +26,14 @@ import { Button } from '../ui/Button';
 import { ConfirmDialog } from '../ui/Modal';
 import { AnimatedNumber, LinearProgress, ProgressRing } from '../ui/DataViz';
 import { EmptyState } from '../ui/Common';
-import { getUnitMeta } from '../../lib/insights';
+import { AIExplainCard } from '../ai/AIExplainCard';
+import { unitLabel } from '../../lib/units';
+import type { Unit } from '../../types';
 import { duration, ease, questionVariants, riseIn, spring, staggerContainer } from '../../lib/motion';
 
 interface PracticeSessionProps {
   questions: VocabularyQuestion[];
+  units: Unit[];
   config: PracticeConfig;
   masteryRecords: Record<string, WordMasteryRecord>;
   isAudioEnabled?: boolean;
@@ -45,6 +48,7 @@ interface PracticeSessionProps {
 
 export const PracticeSession: React.FC<PracticeSessionProps> = ({
   questions,
+  units,
   config,
   masteryRecords,
   isAudioEnabled = true,
@@ -85,7 +89,7 @@ export const PracticeSession: React.FC<PracticeSessionProps> = ({
       const byId = new Map(questions.map((q) => [q.id, q]));
       pool = config.questionIds.map((id) => byId.get(id)).filter(Boolean) as VocabularyQuestion[];
     } else {
-      pool = questions.filter((q) => config.units.includes(q.unit));
+      pool = questions.filter((q) => config.unitIds.includes(q.unitId));
     }
 
     if (config.order === 'random') {
@@ -219,9 +223,11 @@ export const PracticeSession: React.FC<PracticeSessionProps> = ({
   const title = useMemo(() => {
     if (config.label) return config.label;
     if (config.questionIds?.length) return '定向练习';
-    if (config.units.length === 1) return `Unit ${config.units[0]} · ${getUnitMeta(config.units[0]).title}`;
-    return `Unit ${config.units.join(' · ')} 混合练习`;
-  }, [config]);
+    const names = config.unitIds.map((id) => unitLabel(units, id));
+    if (names.length === 1) return names[0];
+    if (names.length <= 3) return `${names.join(' · ')} 混合练习`;
+    return `${names.length} 个单元混合练习`;
+  }, [config, units]);
 
   if (queue.length === 0 || !currentQ) {
     return (
@@ -350,7 +356,7 @@ export const PracticeSession: React.FC<PracticeSessionProps> = ({
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] text-ink-3">
                 <span className="eyebrow !text-ink-2">Question {String(currentIndex + 1).padStart(2, '0')}</span>
                 <span>
-                  Unit {currentQ.unit} · {currentQ.partOfSpeech}
+                  {unitLabel(units, currentQ.unitId)} · {currentQ.partOfSpeech}
                 </span>
               </div>
               <div className="flex items-center">
@@ -387,7 +393,12 @@ export const PracticeSession: React.FC<PracticeSessionProps> = ({
 
             <AnimatePresence>
               {showFeedback && evaluation && (
-                <FeedbackPanel question={currentQ} evaluation={evaluation} userAnswer={currentInput} />
+                <FeedbackPanel
+                  question={currentQ}
+                  evaluation={evaluation}
+                  userAnswer={currentInput}
+                  aiSlot={<AIExplainCard question={currentQ} userAnswer={currentInput} evaluation={evaluation} />}
+                />
               )}
             </AnimatePresence>
           </motion.div>
@@ -448,9 +459,9 @@ export const PracticeSession: React.FC<PracticeSessionProps> = ({
 /* ==========================================================================
    SessionSummary — the completion moment.
    ========================================================================== */
-const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+export const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
-const SessionSummary: React.FC<{
+export const SessionSummary: React.FC<{
   total: number;
   correct: number;
   wrong: VocabularyQuestion[];
@@ -460,7 +471,8 @@ const SessionSummary: React.FC<{
   onRetest?: (q: VocabularyQuestion[]) => void;
   onRestart?: () => void;
   onHome: () => void;
-}> = ({ total, correct, wrong, bestStreak, seconds, title, onRetest, onRestart, onHome }) => {
+  extra?: React.ReactNode;
+}> = ({ total, correct, wrong, bestStreak, seconds, title, onRetest, onRestart, onHome, extra }) => {
   const acc = total > 0 ? Math.round((correct / total) * 100) : 0;
   const summaryId = useRef(`summary-${Math.random().toString(36).slice(2)}`).current;
   const uniqueWrong = Array.from(new Map(wrong.map((q) => [q.id, q])).values());
@@ -559,6 +571,8 @@ const SessionSummary: React.FC<{
             </div>
           </motion.div>
         )}
+
+        {extra && <motion.div variants={riseIn} className="mt-8 w-full">{extra}</motion.div>}
 
         <motion.div variants={riseIn} className="mt-10 flex w-full flex-col gap-2 sm:flex-row sm:justify-center">
           {uniqueWrong.length > 0 && onRetest && (

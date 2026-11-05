@@ -8,7 +8,7 @@ import type {
 /** Presentation-only helpers. They read data; they never change scoring or mastery logic. */
 
 export interface UnitMetrics {
-  unit: number;
+  unitId: string;
   total: number;
   practiced: number;
   mastered: number;
@@ -24,10 +24,10 @@ export interface UnitMetrics {
 export function getUnitMetrics(
   questions: VocabularyQuestion[],
   records: Record<string, WordMasteryRecord>,
-  unit: number | number[]
+  unitId: string | string[]
 ): UnitMetrics {
-  const units = Array.isArray(unit) ? unit : [unit];
-  const pool = questions.filter((q) => units.includes(q.unit));
+  const ids = Array.isArray(unitId) ? unitId : [unitId];
+  const pool = questions.filter((q) => ids.includes(q.unitId));
   let practiced = 0,
     mastered = 0,
     familiar = 0,
@@ -52,7 +52,7 @@ export function getUnitMetrics(
 
   const total = pool.length;
   return {
-    unit: units[0],
+    unitId: ids[0],
     total,
     practiced,
     mastered,
@@ -165,24 +165,6 @@ export const MASTERY_META: Record<
     dot: 'bg-line-strong',
   },
 };
-
-export const UNIT_META: Record<number, { title: string; subtitle: string; tone: 'accent' | 'sky' | 'plum' | 'ink' }> = {
-  1: { title: 'College Life & Ambition', subtitle: '大学生活与志向', tone: 'accent' },
-  2: { title: 'Technology & Sustainability', subtitle: '科技与可持续发展', tone: 'sky' },
-  3: { title: 'Scientific Inquiry', subtitle: '科学探究', tone: 'ink' },
-  4: { title: 'Global Perspectives', subtitle: '全球视野', tone: 'ink' },
-};
-
-export function getUnitMeta(unit: number) {
-  return UNIT_META[unit] ?? { title: `Unit ${unit}`, subtitle: '自定义单元', tone: 'ink' as const };
-}
-
-/** Units present in the bank, sorted. Falls back to 1–4 for an empty bank. */
-export function getAvailableUnits(questions: VocabularyQuestion[]) {
-  const set = new Set(questions.map((q) => q.unit));
-  const list = Array.from(set).sort((a, b) => a - b);
-  return list.length ? list : [1, 2, 3, 4];
-}
 
 /** Split a cloze sentence around its blank. */
 export function splitSentence(sentence: string) {

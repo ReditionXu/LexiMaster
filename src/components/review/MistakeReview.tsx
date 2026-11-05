@@ -2,7 +2,9 @@ import React, { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ArrowRight, Bookmark, ChevronDown, NotebookPen, Play, RotateCcw } from 'lucide-react';
 import { VocabularyQuestion, WordMasteryRecord, PracticeConfig } from '../../types';
-import { getAvailableUnits, relativeTime, splitSentence } from '../../lib/insights';
+import { relativeTime, splitSentence } from '../../lib/insights';
+import { activeUnits, unitLabel } from '../../lib/units';
+import type { Unit } from '../../types';
 import { ease, spring } from '../../lib/motion';
 import { Button } from '../ui/Button';
 import { Segmented } from '../ui/Segmented';
@@ -11,6 +13,7 @@ import { SpeakButton } from '../sentence/SentenceClozeInput';
 
 interface MistakeReviewProps {
   questions: VocabularyQuestion[];
+  units: Unit[];
   masteryRecords: Record<string, WordMasteryRecord>;
   onStartPractice: (config: PracticeConfig) => void;
   onToggleBookmark: (wordId: string) => void;
@@ -21,15 +24,16 @@ type SortKey = 'errorCount' | 'recent' | 'unit';
 
 export const MistakeReview: React.FC<MistakeReviewProps> = ({
   questions,
+  units: allUnits,
   masteryRecords,
   onStartPractice,
   onToggleBookmark,
 }) => {
-  const [selectedUnit, setSelectedUnit] = useState<number | 'all'>('all');
+  const [selectedUnit, setSelectedUnit] = useState<string>('all');
   const [selectedMastery, setSelectedMastery] = useState<MasteryFilter>('all');
   const [sortBy, setSortBy] = useState<SortKey>('errorCount');
   const [openId, setOpenId] = useState<string | null>(null);
-  const units = getAvailableUnits(questions);
+  const unitList = activeUnits(allUnits);
 
   // A word belongs in the notebook if it has ever been answered incorrectly (same rule as before).
   const allMistakes = useMemo(
@@ -44,7 +48,7 @@ export const MistakeReview: React.FC<MistakeReviewProps> = ({
 
   const filtered = allMistakes.filter((q) => {
     const rec = masteryRecords[q.id];
-    if (selectedUnit !== 'all' && q.unit !== selectedUnit) return false;
+    if (selectedUnit !== 'all' && q.unitId !== selectedUnit) return false;
     if (selectedMastery === 'weak' && rec.masteryLevel !== 'weak') return false;
     if (selectedMastery === 'learning' && rec.masteryLevel !== 'learning') return false;
     if (selectedMastery === 'bookmarked' && !rec.bookmarked) return false;
@@ -58,14 +62,16 @@ export const MistakeReview: React.FC<MistakeReviewProps> = ({
     const errorsB = (recB?.totalAttempts || 0) - (recB?.correctAttempts || 0);
     if (sortBy === 'errorCount') return errorsB - errorsA;
     if (sortBy === 'recent') return (recB?.lastAttemptTime || 0) - (recA?.lastAttemptTime || 0);
-    return a.unit - b.unit;
+    const oa = allUnits.find((u) => u.id === a.unitId)?.order ?? 0;
+    const ob = allUnits.find((u) => u.id === b.unitId)?.order ?? 0;
+    return oa - ob;
   });
 
   const practiceWords = (list: VocabularyQuestion[], label: string) => {
     if (list.length === 0) return;
     onStartPractice({
       mode: 'practice',
-      units: Array.from(new Set(list.map((q) => q.unit))),
+      unitIds: Array.from(new Set(list.map((q) => q.unitId))),
       questionCount: list.length,
       order: 'weakest-first',
       timed: false,
@@ -103,8 +109,8 @@ export const MistakeReview: React.FC<MistakeReviewProps> = ({
               onChange={setSelectedUnit}
               ariaLabel="单元"
               options={[
-                { value: 'all' as const, label: '全部单元' },
-                ...units.map((u) => ({ value: u, label: `Unit ${u}` })),
+                { value: 'all', label: '全部单元' },
+                ...unitList.map((u) => ({ value: u.id, label: u.name })),
               ]}
             />
           </div>
@@ -163,6 +169,7 @@ export const MistakeReview: React.FC<MistakeReviewProps> = ({
               {sorted.map((q) => (
                 <MistakeRow
                   key={q.id}
+                  unitName={unitLabel(allUnits, q.unitId)}
                   q={q}
                   rec={masteryRecords[q.id]}
                   open={openId === q.id}
@@ -181,12 +188,13 @@ export const MistakeReview: React.FC<MistakeReviewProps> = ({
 
 const MistakeRow: React.FC<{
   q: VocabularyQuestion;
+  unitName: string;
   rec: WordMasteryRecord;
   open: boolean;
   onToggle: () => void;
   onBookmark: () => void;
   onPractice: () => void;
-}> = ({ q, rec, open, onToggle, onBookmark, onPractice }) => {
+}> = ({ q, unitName, rec, open, onToggle, onBookmark, onPractice }) => {
   const errors = rec.totalAttempts - rec.correctAttempts;
   const lastError = rec.errorHistory?.[rec.errorHistory.length - 1];
   const { before, after } = splitSentence(q.sentence);
@@ -209,7 +217,7 @@ const MistakeRow: React.FC<{
               <span className="truncate text-[13px] text-ink-2">{q.chineseHint}</span>
             </span>
             <span className="block text-[12px] text-ink-3">
-              Unit {q.unit} · {relativeTime(rec.lastAttemptTime)}
+              {unitName} · {relativeTime(rec.lastAttemptTime)}
             </span>
           </span>
         </button>

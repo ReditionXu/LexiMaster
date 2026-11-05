@@ -9,6 +9,7 @@ import { Button } from '../ui/Button';
 import { Segmented } from '../ui/Segmented';
 import { AnimatedNumber, ProgressRing } from '../ui/DataViz';
 import { AnswerDiff, SpeakButton } from '../sentence/SentenceClozeInput';
+import { AIExplainCard } from '../ai/AIExplainCard';
 
 interface ResultReportProps {
   result: ExamSessionResult;
@@ -278,7 +279,7 @@ const ReviewRow: React.FC<{ record: UserAnswerRecord; index: number }> = ({ reco
             {after}
           </span>
           <span className="mt-1 block text-[12px] text-ink-3">
-            #{index + 1} · Unit {q.unit} · {q.grammarNote}
+            #{index + 1} · {q.grammarNote}
             {!record.isCorrect && (
               <>
                 {' '}· 你的作答 <span className="font-serif italic text-danger">{record.userAnswer || '未作答'}</span>
@@ -300,6 +301,8 @@ const ReviewRow: React.FC<{ record: UserAnswerRecord; index: number }> = ({ reco
             <div className="space-y-3 px-5 pb-5 pl-14 sm:px-6 sm:pl-[60px]">
               {!record.isCorrect && <AnswerDiff user={record.userAnswer} correct={q.correctAnswer} />}
               <p className="text-[13.5px] leading-relaxed text-ink-2">{q.explanation}</p>
+              {/* Exam already submitted — explanations are allowed now. Manual to control cost. */}
+              {!record.isCorrect && <AIExplainCard question={q} userAnswer={record.userAnswer} evaluation={record.evaluation} trigger="manual" compact />}
               <div className="flex items-center gap-2 text-[12px] text-ink-3">
                 <span>原形 <span className="font-serif italic text-ink-2">{q.word}</span></span>
                 <SpeakButton question={q} label />

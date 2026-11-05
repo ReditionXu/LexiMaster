@@ -11,8 +11,19 @@ import { duration, ease, shake, spring } from '../../lib/motion';
    ========================================================================== */
 export type ClozeStatus = 'idle' | 'correct' | 'incorrect';
 
+/**
+ * The only data ClozeLine can see. Deliberately excludes the answer, lemma and
+ * explanation so the exam (which passes a PublicExamQuestion) cannot leak them.
+ */
+export interface ClozePrompt {
+  id?: string;
+  questionId?: string;
+  sentence: string;
+  chineseHint: string;
+}
+
 interface ClozeLineProps {
-  question: VocabularyQuestion;
+  question: ClozePrompt;
   value: string;
   onChange: (v: string) => void;
   onEnter: () => void;
@@ -61,7 +72,7 @@ export const ClozeLine: React.FC<ClozeLineProps> = ({
     const t = setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 30);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [question.id, question.sentence, autoFocus]);
+  }, [question.id ?? question.questionId, question.sentence, autoFocus]);
 
   useEffect(() => {
     if (shakeSignal > 0) controls.start(shake);
@@ -233,9 +244,11 @@ interface FeedbackPanelProps {
   question: VocabularyQuestion;
   evaluation: AnswerEvaluation;
   userAnswer: string;
+  /** Optional AI explanation, rendered after the deterministic result. */
+  aiSlot?: React.ReactNode;
 }
 
-export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ question, evaluation, userAnswer }) => {
+export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ question, evaluation, userAnswer, aiSlot }) => {
   const correct = evaluation.isCorrect;
   const isTrap = evaluation.feedbackType === 'base_form_trap';
   const [open, setOpen] = useState(!correct);
@@ -327,6 +340,7 @@ export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ question, evaluati
                 </AnimatePresence>
               </div>
             )}
+            {aiSlot}
           </div>
         </div>
       </div>
@@ -337,14 +351,16 @@ export const FeedbackPanel: React.FC<FeedbackPanelProps> = ({ question, evaluati
 /* ==========================================================================
    SpeakButton
    ========================================================================== */
-export const SpeakButton: React.FC<{ question: VocabularyQuestion; className?: string; label?: boolean }> = ({
-  question,
-  className = '',
-  label,
-}) => (
+export const SpeakButton: React.FC<{
+  /** A full question (reads the completed sentence) or raw text to read. */
+  question?: VocabularyQuestion;
+  text?: string;
+  className?: string;
+  label?: boolean;
+}> = ({ question, text, className = '', label }) => (
   <button
     type="button"
-    onClick={() => speech.speak(question.sentence.replace('_____', question.correctAnswer))}
+    onClick={() => speech.speak(text ?? (question ? question.sentence.replace('_____', question.correctAnswer) : ''))}
     title="朗读完整句子"
     aria-label="朗读完整句子"
     className={`inline-flex items-center gap-1.5 rounded-md text-ink-3 transition-colors hover:text-ink ${

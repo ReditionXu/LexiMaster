@@ -27,16 +27,16 @@ import {
   PracticeConfig,
 } from '../../types';
 import {
-  getAvailableUnits,
   getDailyActivity,
   getStreakDays,
-  getUnitMeta,
   getUnitMetrics,
   MASTERY_META,
   startOfDay,
 } from '../../lib/insights';
 import { riseIn, staggerContainer } from '../../lib/motion';
 import { useTokens } from '../../lib/useTokens';
+import { activeUnits, unitShort } from '../../lib/units';
+import type { Unit } from '../../types';
 import { Button } from '../ui/Button';
 import { Segmented } from '../ui/Segmented';
 import { AnimatedNumber } from '../ui/DataViz';
@@ -44,6 +44,9 @@ import { EmptyState, PageHeader } from '../ui/Common';
 
 interface AnalyticsDashboardProps {
   questions: VocabularyQuestion[];
+  units: Unit[];
+  /** Slot for the AI learning report (rendered only when there is history). */
+  aiReport?: React.ReactNode;
   masteryRecords: Record<string, WordMasteryRecord>;
   exams: ExamSessionResult[];
   history: UserAnswerRecord[];
@@ -56,6 +59,8 @@ const DAY = 86_400_000;
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   questions,
+  units: allUnits,
+  aiReport,
   masteryRecords,
   exams,
   history,
@@ -65,7 +70,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 }) => {
   const t = useTokens();
   const [range, setRange] = useState<7 | 30 | 0>(30);
-  const units = getAvailableUnits(questions);
+  const unitList = activeUnits(allUnits);
 
   /* ---------------------------------------------------------------- data */
   const masteryData = [
@@ -78,11 +83,11 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   const masteryPct =
     stats.totalWords > 0 ? Math.round(((stats.masteredCount + stats.familiarCount * 0.5) / stats.totalWords) * 100) : 0;
 
-  const unitData = units.map((u) => {
-    const m = getUnitMetrics(questions, masteryRecords, u);
+  const unitData = unitList.map((u) => {
+    const m = getUnitMetrics(questions, masteryRecords, u.id);
     return {
-      name: `Unit ${u}`,
-      title: getUnitMeta(u).title,
+      name: unitShort(allUnits, u.id),
+      title: u.name + (u.description ? ` · ${u.description}` : ''),
       正确率: m.practiced ? m.accuracy : 0,
       覆盖率: Math.round(m.coverage * 100),
       practiced: m.practiced,
@@ -159,7 +164,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   trailing={<ArrowRight />}
                   nudge
                   onClick={() =>
-                    onStartPractice?.({ mode: 'practice', units: [1, 2], questionCount: 10, order: 'random', timed: false })
+                    onStartPractice?.({ mode: 'practice', unitIds: unitList.slice(0, 2).map((u) => u.id), questionCount: 10, order: 'random', timed: false })
                   }
                 >
                   开始 10 题练习
@@ -210,6 +215,8 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           </div>
         ))}
       </motion.div>
+
+      {aiReport && <motion.div variants={riseIn}>{aiReport}</motion.div>}
 
       {/* --------------------------------------------------------- Mastery + Trend */}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.4fr)]">
@@ -436,7 +443,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                   onClick={() =>
                     onStartPractice({
                       mode: 'practice',
-                      units: Array.from(new Set(weakWords.map((q) => q.unit))),
+                      unitIds: Array.from(new Set(weakWords.map((q) => q.unitId))),
                       questionCount: weakWords.length,
                       order: 'weakest-first',
                       timed: false,

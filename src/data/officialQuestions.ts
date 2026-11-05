@@ -1,10 +1,10 @@
-import type { VocabularyQuestion } from '../types/index.ts';
+import type { SeedQuestion } from '../types/index.ts';
 
 /**
  * 教材全量正式题库 (Official College English Question Bank)
  * 覆盖 Unit 1 (27题), Unit 2 (31题), Unit 3 (33题), Unit 4 (34题)，共 125 道经典语境填空题。
  */
-export const OFFICIAL_QUESTIONS: VocabularyQuestion[] = [
+export const OFFICIAL_QUESTIONS: SeedQuestion[] = [
   // =========================================================================
   // UNIT 1 (共 27 题)
   // =========================================================================

@@ -12,6 +12,7 @@ _backup_v1/
 npm-debug.log*
 .env
 .env.*
+!.env.example
 
 # OS / editor
 .DS_Store

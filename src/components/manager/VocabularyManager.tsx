@@ -18,7 +18,9 @@ import { Button } from '../ui/Button';
 import { Modal, ConfirmDialog } from '../ui/Modal';
 import { Segmented } from '../ui/Segmented';
 import { EmptyState, PageHeader } from '../ui/Common';
-import { getAvailableUnits } from '../../lib/insights';
+import { UnitsPanel } from './UnitsPanel';
+import { activeUnits, countByUnit, makeUnit, resolveUnitRef, unitLabel, unitShort } from '../../lib/units';
+import type { Unit } from '../../types';
 import { ease } from '../../lib/motion';
 import {
   VocabularyQuestion,
@@ -38,18 +40,32 @@ import {
 
 interface VocabularyManagerProps {
   questions: VocabularyQuestion[];
+  units: Unit[];
   masteryRecords: Record<string, WordMasteryRecord>;
   onUpdateQuestions: (newQuestions: VocabularyQuestion[]) => void;
+  onUpdateUnits: (units: Unit[]) => void;
+  /** Import may create new units for unknown unit names — saved atomically with the words. */
+  onImport: (units: Unit[], questions: VocabularyQuestion[]) => void;
+  onPurgeUnit: (unitId: string) => void;
   onResetToDefault: () => void;
 }
 
 export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
-  questions,
+  questions: allQuestions,
+  units,
   masteryRecords,
   onUpdateQuestions,
+  onUpdateUnits,
+  onImport,
+  onPurgeUnit,
   onResetToDefault,
 }) => {
-  const [selectedUnit, setSelectedUnit] = useState<number | 'all'>('all');
+  // Words of trashed units are hidden here (they reappear when the unit is restored).
+  const liveUnitIds = new Set(units.filter((u) => !u.deletedAt).map((u) => u.id));
+  const questions = allQuestions.filter((q) => liveUnitIds.has(q.unitId));
+  const [selectedUnitRaw, setSelectedUnit] = useState<string | 'all'>('all');
+  const selectedUnit = selectedUnitRaw !== 'all' && !liveUnitIds.has(selectedUnitRaw) ? 'all' : selectedUnitRaw;
+  const selectableUnits = activeUnits(units).concat(units.filter((u) => u.archived && !u.deletedAt));
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingQuestion, setEditingQuestion] = useState<VocabularyQuestion | null>(null);
@@ -62,7 +78,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Form State for Add / Edit
-  const [formUnit, setFormUnit] = useState<number>(1);
+  const [formUnit, setFormUnit] = useState<string>('');
   const [formWord, setFormWord] = useState('');
   const [formSentence, setFormSentence] = useState('');
   const [formHint, setFormHint] = useState('');
@@ -77,7 +93,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
 
   // Filter questions
   const filteredQuestions = questions.filter((q) => {
-    if (selectedUnit !== 'all' && q.unit !== selectedUnit) return false;
+    if (selectedUnit !== 'all' && q.unitId !== selectedUnit) return false;
     if (searchQuery.trim()) {
       const qLower = searchQuery.toLowerCase();
       const matchWord = q.word.toLowerCase().includes(qLower);
@@ -91,7 +107,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
 
   const openAddModal = () => {
     setEditingQuestion(null);
-    setFormUnit(typeof selectedUnit === 'number' ? selectedUnit : 1);
+    setFormUnit(selectedUnit !== 'all' ? selectedUnit : selectableUnits[0]?.id ?? '');
     setFormWord('');
     setFormSentence('');
     setFormHint('');
@@ -109,7 +125,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
 
   const openEditModal = (q: VocabularyQuestion) => {
     setEditingQuestion(q);
-    setFormUnit(q.unit);
+    setFormUnit(q.unitId);
     setFormWord(q.word);
     setFormSentence(q.sentence);
     setFormHint(q.chineseHint);
@@ -139,6 +155,10 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
       return;
     }
 
+    if (!formUnit || !liveUnitIds.has(formUnit)) {
+      setFormError('请选择所属单元；如果还没有单元，请先在左侧新建。');
+      return;
+    }
     setFormError(null);
     const acceptedArr = formAccepted
       .split(/[,|;/]/)
@@ -156,7 +176,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
         item.id === editingQuestion.id
           ? {
               ...item,
-              unit: Number(formUnit),
+              unitId: formUnit,
               word: formWord.trim(),
               sentence: standardizedSentence,
               chineseHint: formHint.trim(),
@@ -175,8 +195,8 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
     } else {
       // Create new
       const newQ: VocabularyQuestion = {
-        id: `U${formUnit}-${formWord.slice(0, 4).toUpperCase()}-${Date.now().toString(36)}`,
-        unit: Number(formUnit),
+        id: `${unitShort(units, formUnit).replace(/[^A-Za-z0-9]/g, '') || 'U'}-${formWord.slice(0, 4).toUpperCase()}-${Date.now().toString(36)}`,
+        unitId: formUnit,
         word: formWord.trim(),
         sentence: standardizedSentence,
         chineseHint: formHint.trim(),
@@ -211,28 +231,38 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
 
     const ext = file.name.split('.').pop()?.toLowerCase();
 
+    // Unit resolution: import into the selected unit, or map each row's unit column
+    // (number / "Unit N" / name) to an existing unit — creating new units as needed.
+    const workingUnits = [...units];
+    const created: string[] = [];
+    const resolveUnit = (ref: unknown): string | undefined => {
+      if (selectedUnit !== 'all') return selectedUnit;
+      const found = resolveUnitRef(ref, workingUnits);
+      if (found) return found.id;
+      const raw = String(ref ?? '').trim();
+      if (!raw) return undefined;
+      const name = /^\d+$/.test(raw) ? `Unit ${raw}` : raw.slice(0, 40);
+      const u = makeUnit(name, workingUnits);
+      workingUnits.push(u);
+      created.push(u.name);
+      return u.id;
+    };
+    const commit = (res: ImportValidationResult) => {
+      if (created.length) res.warnings.push(`已自动创建 ${created.length} 个新单元：${created.join('、')}`);
+      setImportResult(res);
+      if (res.validQuestions.length > 0) onImport(workingUnits, [...allQuestions, ...res.validQuestions]);
+    };
+
     try {
       if (ext === 'json') {
         const text = await file.text();
-        const res = parseJSONQuestions(text, questions);
-        setImportResult(res);
-        if (res.validQuestions.length > 0) {
-          onUpdateQuestions([...questions, ...res.validQuestions]);
-        }
+        commit(parseJSONQuestions(text, allQuestions, resolveUnit));
       } else if (ext === 'csv') {
         const text = await file.text();
-        const res = parseCSVQuestions(text, questions);
-        setImportResult(res);
-        if (res.validQuestions.length > 0) {
-          onUpdateQuestions([...questions, ...res.validQuestions]);
-        }
+        commit(parseCSVQuestions(text, allQuestions, resolveUnit));
       } else if (ext === 'xlsx' || ext === 'xls') {
         const buffer = await file.arrayBuffer();
-        const res = parseExcelQuestions(buffer, questions);
-        setImportResult(res);
-        if (res.validQuestions.length > 0) {
-          onUpdateQuestions([...questions, ...res.validQuestions]);
-        }
+        commit(parseExcelQuestions(buffer, allQuestions, resolveUnit));
       } else {
         setUploadError('不支持的文件格式。请选择 .xlsx、.csv 或 .json 文件。');
       }
@@ -244,8 +274,8 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
     }
   };
 
-  const units = getAvailableUnits(questions);
-  const unitOptions = Array.from(new Set([1, 2, 3, 4, ...units])).sort((a, b) => a - b);
+  const counts = countByUnit(questions);
+  const unitName = (id: string) => unitLabel(units, id);
 
   const accuracyCell = (q: VocabularyQuestion) => {
     const rec = masteryRecords[q.id];
@@ -294,10 +324,10 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
         <Button size="sm" variant="ghost" leading={<FileSpreadsheet />} onClick={() => downloadVocabularyTemplate('xlsx')}>
           下载 Excel 模板
         </Button>
-        <Button size="sm" variant="ghost" leading={<Download />} onClick={() => exportQuestionsToExcel(questions)}>
+        <Button size="sm" variant="ghost" leading={<Download />} onClick={() => exportQuestionsToExcel(filteredQuestions, 'LexiMaster_Vocabulary.xlsx', unitName)}>
           导出 Excel
         </Button>
-        <Button size="sm" variant="ghost" leading={<FileText />} onClick={() => exportQuestionsToCSV(questions)}>
+        <Button size="sm" variant="ghost" leading={<FileText />} onClick={() => exportQuestionsToCSV(filteredQuestions, 'LexiMaster_Vocabulary.csv', unitName)}>
           导出 CSV
         </Button>
         <Button size="sm" variant="ghost" leading={<RotateCcw />} onClick={() => setConfirmReset(true)} className="hover:!text-danger">
@@ -335,6 +365,9 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
                         成功导入 {importResult.validQuestions.length} 道题目
                       </h4>
                       <p className="mt-0.5 text-[13px] text-ink-2">共扫描 {importResult.totalParsed} 行记录，已自动纠正并去重。</p>
+                      {importResult.warnings.map((w, i) => (
+                        <p key={i} className="mt-1 text-[13px] text-ink-2">{w}</p>
+                      ))}
                       {importResult.errors.length > 0 && (
                         <div className="mt-3">
                           <div className="text-[12.5px] font-medium text-warning-ink">以下行未通过校验，已安全跳过：</div>
@@ -366,18 +399,29 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
         )}
       </AnimatePresence>
 
+      <div className="grid gap-8 lg:grid-cols-[260px_minmax(0,1fr)]">
+      <UnitsPanel
+        units={units}
+        counts={counts}
+        totalCount={questions.length}
+        selected={selectedUnit}
+        onSelect={setSelectedUnit}
+        onChangeUnits={onUpdateUnits}
+        onPurgeUnit={onPurgeUnit}
+      />
+      <div className="min-w-0 space-y-5">
       {/* Filters */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="no-scrollbar -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <Segmented
-            value={selectedUnit}
-            onChange={setSelectedUnit}
-            ariaLabel="单元"
-            options={[
-              { value: 'all' as const, label: '全部', count: questions.length },
-              ...units.map((u) => ({ value: u, label: `Unit ${u}`, count: questions.filter((q) => q.unit === u).length })),
-            ]}
-          />
+        <div className="min-w-0">
+          <div className="truncate text-[16px] font-semibold text-ink">
+            {selectedUnit === 'all' ? '全部词汇' : unitName(selectedUnit)}
+            {selectedUnit !== 'all' && units.find((u) => u.id === selectedUnit)?.archived && (
+              <span className="ml-2 rounded-full bg-sunken px-2 py-0.5 text-[11.5px] font-medium text-ink-3">已归档</span>
+            )}
+          </div>
+          <div className="text-[12.5px] text-ink-3">
+            {filteredQuestions.length} 个词汇 · 导入时{selectedUnit === 'all' ? '按文件中的 unit 列分配单元（未知名称会自动新建）' : '全部导入到此单元'}
+          </div>
         </div>
         <label className="relative w-full sm:w-72">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" />
@@ -395,7 +439,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
         <div className="card">
           <EmptyState
             icon={<FileText />}
-            title={selectedUnit !== 'all' && !searchQuery ? `Unit ${selectedUnit} 暂无词汇` : '没有匹配的题目'}
+            title={selectedUnit !== 'all' && !searchQuery ? `${unitName(selectedUnit)} 暂无词汇` : '没有匹配的题目'}
             description={
               selectedUnit !== 'all' && !searchQuery
                 ? '可以导入题库文件，或手动为这个单元添加题目。'
@@ -434,7 +478,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
                     <td className="py-3.5 pl-6 pr-3 align-top">
                       <div className="font-serif text-[16.5px] font-medium text-ink">{q.word}</div>
                       <div className="mt-0.5 text-[11.5px] text-ink-3">
-                        U{q.unit} · {q.partOfSpeech}
+                        {unitShort(units, q.unitId)} · {q.partOfSpeech}
                         {q.isCustom && <span className="ml-1.5 text-accent">自定义</span>}
                       </div>
                     </td>
@@ -480,7 +524,7 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
                   <div className="min-w-0">
                     <div className="flex items-baseline gap-2">
                       <span className="font-serif text-[17px] font-medium text-ink">{q.word}</span>
-                      <span className="text-[12px] text-ink-3">U{q.unit} · {q.chineseHint}</span>
+                      <span className="text-[12px] text-ink-3">{unitShort(units, q.unitId)} · {q.chineseHint}</span>
                     </div>
                     <p className="mt-1 line-clamp-2 font-serif text-[14.5px] leading-relaxed text-ink-2">
                       {q.sentence.replace('_____', q.correctAnswer)}
@@ -502,6 +546,9 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
         </div>
       )}
 
+      </div>
+      </div>
+
       {/* Add / Edit */}
       <Modal
         open={showAddModal}
@@ -514,10 +561,11 @@ export const VocabularyManager: React.FC<VocabularyManagerProps> = ({
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div>
               <label className={fieldLabel}>单元</label>
-              <select value={formUnit} onChange={(e) => setFormUnit(Number(e.target.value))} className="field">
-                {unitOptions.map((u) => (
-                  <option key={u} value={u}>
-                    Unit {u}
+              <select value={formUnit} onChange={(e) => setFormUnit(e.target.value)} className="field">
+                {selectableUnits.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}
+                    {u.archived ? '（已归档）' : ''}
                   </option>
                 ))}
               </select>

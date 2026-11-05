@@ -15,6 +15,7 @@ import {
   Volume2,
   VolumeX,
   HardDriveDownload,
+  Sparkles,
 } from 'lucide-react';
 import { AppView } from '../../types';
 import { LogoMark } from '../ui/Common';
@@ -30,6 +31,8 @@ interface NavbarProps {
   isFocusMode: boolean;
   onToggleFocusMode: () => void;
   onOpenBackupModal: () => void;
+  onOpenAISettings?: () => void;
+  aiStatus?: 'on' | 'incomplete' | 'off';
   weakCount?: number;
 }
 
@@ -59,6 +62,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   isFocusMode,
   onToggleFocusMode,
   onOpenBackupModal,
+  onOpenAISettings,
+  aiStatus = 'off',
   weakCount = 0,
 }) => {
   const [scrolled, setScrolled] = useState(false);
@@ -177,6 +182,23 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Utilities */}
           <div className="ml-auto flex items-center gap-1 md:ml-0">
+            {onOpenAISettings && (
+              <button
+                onClick={onOpenAISettings}
+                aria-current={currentView === 'ai-settings' ? 'page' : undefined}
+                title={aiStatus === 'on' ? 'AI 已启用' : aiStatus === 'incomplete' ? 'AI 配置未完成' : 'AI 未启用'}
+                className={`relative inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium transition-colors hover:bg-sunken ${
+                  currentView === 'ai-settings' ? 'bg-sunken text-ink' : 'text-ink-2 hover:text-ink'
+                }`}
+              >
+                <Sparkles className={`h-4 w-4 ${aiStatus === 'on' ? 'text-accent' : ''}`} />
+                <span className="hidden sm:inline">AI</span>
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${aiStatus === 'on' ? 'bg-success' : aiStatus === 'incomplete' ? 'bg-warning' : 'bg-line-strong'}`}
+                  aria-hidden
+                />
+              </button>
+            )}
             <button
               onClick={onToggleDarkMode}
               className={iconBtn}

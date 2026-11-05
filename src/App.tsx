@@ -21,7 +21,17 @@ import {
   saveExamSessionResult,
   computeOverallStats,
   toggleWordBookmark,
+  ensureMigrated,
+  getStoredUnits,
+  saveStoredUnits,
+  getActiveExam,
+  saveActiveExam,
 } from './utils/storage';
+import { Unit } from './types';
+import { activeUnits, practiceQuestions } from './lib/units';
+import type { ActiveExamState } from './lib/exam';
+import type { AIPracticeConfig } from './types';
+import { aiReady, useAISettings } from './ai/settings';
 import { speech } from './utils/audio';
 import { pageVariants } from './lib/motion';
 
@@ -41,6 +51,10 @@ const VocabularyManager = lazy(() =>
   import('./components/manager/VocabularyManager').then((m) => ({ default: m.VocabularyManager }))
 );
 
+const AISettingsPage = lazy(() => import('./components/ai/AISettings').then((m) => ({ default: m.AISettingsPage })));
+const AIPracticeSession = lazy(() => import('./components/ai/AIPracticeSession').then((m) => ({ default: m.AIPracticeSession })));
+const AIReportCard = lazy(() => import('./components/ai/AIReportCard').then((m) => ({ default: m.AIReportCard })));
+
 const PageFallback = () => (
   <div className="space-y-4" aria-busy="true">
     <div className="h-10 w-48 animate-pulse rounded-md bg-sunken" />
@@ -48,12 +62,19 @@ const PageFallback = () => (
   </div>
 );
 
-const SESSION_VIEWS: AppView[] = ['practice', 'exam'];
+const SESSION_VIEWS: AppView[] = ['practice', 'exam', 'ai-practice'];
 
 export function App() {
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
-  const [setupMode, setSetupMode] = useState<'practice' | 'exam'>('practice');
+  const [setupMode, setSetupMode] = useState<'practice' | 'exam' | 'ai'>('practice');
+  const [aiConfig, setAIConfig] = useState<AIPracticeConfig | null>(null);
+  const [returnView, setReturnView] = useState<AppView>('dashboard');
+  const ai = useAISettings();
+  const aiGenerateReady = aiReady('generate', ai.settings);
   const [questions, setQuestions] = useState<VocabularyQuestion[]>([]);
+  const [units, setUnits] = useState<Unit[]>([]);
+  const [examResume, setExamResume] = useState<ActiveExamState | null>(null);
+  const [pendingExam, setPendingExam] = useState<ActiveExamState | null>(null);
   const [masteryRecords, setMasteryRecords] = useState<Record<string, WordMasteryRecord>>({});
   const [answerHistory, setAnswerHistory] = useState<UserAnswerRecord[]>([]);
   const [examResults, setExamResults] = useState<ExamSessionResult[]>([]);
@@ -63,7 +84,7 @@ export function App() {
   // Active Practice Configuration
   const [activeConfig, setActiveConfig] = useState<PracticeConfig>({
     mode: 'practice',
-    units: [1, 2],
+    unitIds: [],
     questionCount: 0,
     order: 'random',
     timed: false,
@@ -85,6 +106,10 @@ export function App() {
 
   // Load stored state on mount
   const refreshLocalData = useCallback(() => {
+    // v1/v2 → v3 migration (dynamic units). Idempotent; backs up old data first.
+    ensureMigrated();
+    setUnits(getStoredUnits());
+    setPendingExam(getActiveExam<ActiveExamState>());
     setQuestions(getStoredQuestions());
     setMasteryRecords(getStoredMasteryRecords());
     setAnswerHistory(getStoredAnswerHistory());
@@ -113,9 +138,11 @@ export function App() {
   };
 
   // Compute overall statistics
+  // Words in archived / trashed units are excluded from practice, exams, AI and stats.
+  const liveQuestions = useMemo(() => practiceQuestions(questions, units), [questions, units]);
   const stats: OverallStats = useMemo(
-    () => computeOverallStats(questions, masteryRecords, answerHistory),
-    [questions, masteryRecords, answerHistory]
+    () => computeOverallStats(liveQuestions, masteryRecords, answerHistory),
+    [liveQuestions, masteryRecords, answerHistory]
   );
 
   const go = useCallback((view: AppView) => {
@@ -136,15 +163,23 @@ export function App() {
 
   // Handlers for Practice and Exam
   const handleStartPractice = (config: PracticeConfig) => {
+    if (config.mode === 'exam') {
+      // Starting a new exam replaces any unfinished one.
+      saveActiveExam(null);
+      setPendingExam(null);
+      setExamResume(null);
+    }
     setActiveConfig(config);
     setSessionKey((k) => k + 1);
     setCurrentView(config.mode === 'exam' ? 'exam' : 'practice');
   };
 
-  const handleRecordAnswer = (record: UserAnswerRecord, updatedMastery: WordMasteryRecord) => {
+  const handleRecordAnswer = (record: UserAnswerRecord, updatedMastery: WordMasteryRecord | null) => {
     appendUserAnswerRecord(record);
-    saveStoredMasteryRecord(updatedMastery);
-    setMasteryRecords((prev) => ({ ...prev, [updatedMastery.wordId]: updatedMastery }));
+    if (updatedMastery) {
+      saveStoredMasteryRecord(updatedMastery);
+      setMasteryRecords((prev) => ({ ...prev, [updatedMastery.wordId]: updatedMastery }));
+    }
     setAnswerHistory((prev) => [...prev, record]);
   };
 
@@ -164,16 +199,18 @@ export function App() {
     setAnswerHistory(getStoredAnswerHistory());
 
     setCurrentExamResult(result);
+    setExamResume(null);
+    setPendingExam(null);
     setCurrentView('results');
   };
 
   const handleRetestIncorrect = (wrongQuestions: VocabularyQuestion[]) => {
     if (wrongQuestions.length === 0) return;
     const ids = Array.from(new Set(wrongQuestions.map((q) => q.id)));
-    const units = Array.from(new Set(wrongQuestions.map((q) => q.unit)));
+    const unitIds = Array.from(new Set(wrongQuestions.map((q) => q.unitId)));
     handleStartPractice({
       mode: 'practice',
-      units,
+      unitIds,
       questionCount: ids.length,
       order: 'sequential',
       timed: false,
@@ -188,7 +225,57 @@ export function App() {
   };
 
   const handleResetToDefault = () => {
-    setQuestions(resetQuestionsToDefault());
+    const r = resetQuestionsToDefault();
+    setQuestions(r.questions);
+    setUnits(r.units);
+  };
+
+  const handleUpdateUnits = (next: Unit[]) => {
+    saveStoredUnits(next);
+    setUnits(next);
+  };
+
+  const handleImport = (nextUnits: Unit[], nextQuestions: VocabularyQuestion[]) => {
+    saveStoredUnits(nextUnits);
+    saveStoredQuestions(nextQuestions);
+    setUnits(nextUnits);
+    setQuestions(nextQuestions);
+  };
+
+  /** Permanently delete a unit and its words. History/exam records keep their own snapshots. */
+  const handlePurgeUnit = (unitId: string) => {
+    const nextQuestions = questions.filter((q) => q.unitId !== unitId);
+    const nextUnits = units.filter((u) => u.id !== unitId);
+    saveStoredQuestions(nextQuestions);
+    saveStoredUnits(nextUnits);
+    setQuestions(nextQuestions);
+    setUnits(nextUnits);
+  };
+
+  const resumeExam = () => {
+    if (!pendingExam) return;
+    setActiveConfig(pendingExam.config);
+    setExamResume(pendingExam);
+    setSessionKey((k) => k + 1);
+    setCurrentView('exam');
+  };
+
+  const discardExam = () => {
+    saveActiveExam(null);
+    setPendingExam(null);
+  };
+
+  const defaultUnitIds = activeUnits(units).slice(0, 2).map((u) => u.id);
+
+  const startAI = (cfg: AIPracticeConfig) => {
+    setAIConfig(cfg);
+    setSessionKey((k) => k + 1);
+    setCurrentView('ai-practice');
+  };
+
+  const openAISettings = () => {
+    setReturnView(currentView === 'ai-settings' ? 'dashboard' : currentView);
+    setCurrentView('ai-settings');
   };
 
   const inSession = SESSION_VIEWS.includes(currentView);
@@ -216,6 +303,8 @@ export function App() {
             isFocusMode={isFocusMode}
             onToggleFocusMode={() => setIsFocusMode(!isFocusMode)}
             onOpenBackupModal={() => setIsBackupModalOpen(true)}
+            onOpenAISettings={openAISettings}
+            aiStatus={ai.settings.enabled ? (aiGenerateReady || aiReady('explain', ai.settings) ? 'on' : 'incomplete') : 'off'}
             weakCount={stats.weakCount}
           />
         )}
@@ -231,7 +320,7 @@ export function App() {
         >
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={currentView === 'practice' || currentView === 'exam' ? `${currentView}-${sessionKey}` : currentView}
+              key={SESSION_VIEWS.includes(currentView) ? `${currentView}-${sessionKey}` : currentView}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -239,7 +328,23 @@ export function App() {
             >
               {currentView === 'dashboard' && (
                 <Dashboard
-                  questions={questions}
+                  questions={liveQuestions}
+                  units={units}
+                  pendingExam={
+                    pendingExam
+                      ? {
+                          title: pendingExam.config.unitIds.map((id) => units.find((u) => u.id === id)?.name ?? '已删除单元').join(' · '),
+                          answered: Object.values(pendingExam.answers || {}).filter((v) => v && v.trim()).length,
+                          total: pendingExam.paper.questions.length,
+                        }
+                      : null
+                  }
+                  onResumeExam={resumeExam}
+                  onOpenAIPractice={() => {
+                    setSetupMode('ai');
+                    setCurrentView('practice-setup');
+                  }}
+                  onDiscardExam={discardExam}
                   masteryRecords={masteryRecords}
                   history={answerHistory}
                   exams={examResults}
@@ -254,20 +359,48 @@ export function App() {
               {currentView === 'practice-setup' && (
                 <PracticeSetup
                   key={setupMode}
-                  questions={questions}
+                  questions={liveQuestions}
+                  units={units}
                   initialConfig={
                     setupMode === 'exam'
-                      ? { mode: 'exam', units: [1, 2], questionCount: 20, order: 'random', timed: true, timeLimitMinutes: 15 }
+                      ? { mode: 'exam', unitIds: defaultUnitIds, questionCount: 20, order: 'random', timed: true, timeLimitMinutes: 15 }
                       : { ...activeConfig, mode: 'practice', questionIds: undefined }
                   }
+                  initialMode={setupMode === 'ai' ? 'ai' : undefined}
+                  aiReady={aiGenerateReady}
                   onStart={handleStartPractice}
+                  onStartAI={startAI}
+                  onOpenAISettings={openAISettings}
                   onCancel={() => setCurrentView('dashboard')}
                 />
               )}
 
+              {currentView === 'ai-practice' && aiConfig && (
+                <Suspense fallback={<PageFallback />}>
+                  <AIPracticeSession
+                    questions={liveQuestions}
+                    units={units}
+                    config={aiConfig}
+                    masteryRecords={masteryRecords}
+                    onRecordAnswer={handleRecordAnswer}
+                    onExit={() => setCurrentView('dashboard')}
+                    onRestart={() => startAI({ ...aiConfig, wordIds: undefined })}
+                    onOpenReport={() => setCurrentView('analytics')}
+                    onRetest={handleRetestIncorrect}
+                  />
+                </Suspense>
+              )}
+
+              {currentView === 'ai-settings' && (
+                <Suspense fallback={<PageFallback />}>
+                  <AISettingsPage onBack={() => setCurrentView(returnView)} />
+                </Suspense>
+              )}
+
               {currentView === 'practice' && (
                 <PracticeSession
-                  questions={questions}
+                  questions={liveQuestions}
+                  units={units}
                   config={activeConfig}
                   masteryRecords={masteryRecords}
                   isAudioEnabled={isAudioEnabled}
@@ -287,11 +420,17 @@ export function App() {
 
               {currentView === 'exam' && (
                 <ExamSession
-                  questions={questions}
+                  questions={liveQuestions}
+                  units={units}
+                  resume={examResume}
                   config={activeConfig}
                   masteryRecords={masteryRecords}
                   onFinishExam={handleFinishExam}
-                  onExit={() => setCurrentView('dashboard')}
+                  onExit={() => {
+                    setExamResume(null);
+                    setPendingExam(null);
+                    setCurrentView('dashboard');
+                  }}
                 />
               )}
 
@@ -306,7 +445,8 @@ export function App() {
 
               {currentView === 'review' && (
                 <MistakeReview
-                  questions={questions}
+                  questions={liveQuestions}
+                  units={units}
                   masteryRecords={masteryRecords}
                   onStartPractice={handleStartPractice}
                   onToggleBookmark={handleToggleBookmark}
@@ -316,7 +456,21 @@ export function App() {
               {currentView === 'analytics' && (
                 <Suspense fallback={<PageFallback />}>
                 <AnalyticsDashboard
-                  questions={questions}
+                  questions={liveQuestions}
+                  units={units}
+                  aiReport={
+                    <Suspense fallback={null}>
+                      <AIReportCard
+                        questions={liveQuestions}
+                        units={units}
+                        masteryRecords={masteryRecords}
+                        history={answerHistory}
+                        exams={examResults}
+                        onStartAI={startAI}
+                        onOpenSettings={openAISettings}
+                      />
+                    </Suspense>
+                  }
                   masteryRecords={masteryRecords}
                   exams={examResults}
                   history={answerHistory}
@@ -331,8 +485,12 @@ export function App() {
                 <Suspense fallback={<PageFallback />}>
                 <VocabularyManager
                   questions={questions}
+                  units={units}
                   masteryRecords={masteryRecords}
                   onUpdateQuestions={handleUpdateQuestions}
+                  onUpdateUnits={handleUpdateUnits}
+                  onImport={handleImport}
+                  onPurgeUnit={handlePurgeUnit}
                   onResetToDefault={handleResetToDefault}
                 />
                 </Suspense>

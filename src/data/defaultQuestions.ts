@@ -1,4 +1,4 @@
-import type { VocabularyQuestion } from '../types/index.ts';
+import type { SeedQuestion } from '../types/index.ts';
 import { OFFICIAL_QUESTIONS } from './officialQuestions.ts';
 
 /**
@@ -9,4 +9,4 @@ import { OFFICIAL_QUESTIONS } from './officialQuestions.ts';
  * - Unit 3: 33 题
  * - Unit 4: 34 题
  */
-export const DEFAULT_QUESTIONS: VocabularyQuestion[] = OFFICIAL_QUESTIONS;
+export const DEFAULT_QUESTIONS: SeedQuestion[] = OFFICIAL_QUESTIONS;

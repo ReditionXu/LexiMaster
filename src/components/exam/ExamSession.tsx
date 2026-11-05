@@ -1,14 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ArrowLeft, ArrowRight, Clock, Flag, LayoutGrid, Send, X } from 'lucide-react';
+import { VocabularyQuestion, PracticeConfig, ExamSessionResult, WordMasteryRecord, Unit } from '../../types';
 import {
-  VocabularyQuestion,
-  PracticeConfig,
-  ExamSessionResult,
-  UserAnswerRecord,
-  WordMasteryRecord,
-} from '../../types';
-import { evaluateAnswer } from '../../utils/grammarEngine';
+  ActiveExamState,
+  createExamPaper,
+  discardAnswerKey,
+  ExamPaper,
+  gradeExam,
+  PublicExamQuestion,
+  resealExamPaper,
+  selectExamQuestions,
+} from '../../lib/exam';
+import { saveActiveExam } from '../../utils/storage';
+import { unitLabel } from '../../lib/units';
 import { ClozeLine, SpeakButton } from '../sentence/SentenceClozeInput';
 import { Button } from '../ui/Button';
 import { ConfirmDialog, Modal } from '../ui/Modal';
@@ -18,119 +23,121 @@ import { questionVariants, spring } from '../../lib/motion';
 
 interface ExamSessionProps {
   questions: VocabularyQuestion[];
+  units: Unit[];
   config: PracticeConfig;
-  masteryRecords: Record<string, WordMasteryRecord>;
+  masteryRecords?: Record<string, WordMasteryRecord>;
+  /** Resume a persisted in-progress exam (after refresh). */
+  resume?: ActiveExamState | null;
   onFinishExam: (result: ExamSessionResult) => void;
   onExit: () => void;
 }
 
-export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onFinishExam, onExit }) => {
-  const [examQuestions, setExamQuestions] = useState<VocabularyQuestion[]>([]);
+export const ExamSession: React.FC<ExamSessionProps> = ({ questions, units, config, resume, onFinishExam, onExit }) => {
+  // The paper holds ONLY public data. The answer key is sealed inside lib/exam.
+  const [paper, setPaper] = useState<ExamPaper | null>(null);
+  const [resumeNotice, setResumeNotice] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
   const [flagged, setFlagged] = useState<Record<string, boolean>>({});
-  const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number>((config.timeLimitMinutes || 15) * 60);
+  const [now, setNow] = useState(Date.now());
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [showExitModal, setShowExitModal] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const examStartTimeRef = useRef<number>(Date.now());
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startedAtRef = useRef<number>(Date.now());
+  const deadlineRef = useRef<number | null>(null);
   const submittedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Refs mirror state so the timer's auto-submit always grades the latest answers.
   const answersRef = useRef(userAnswers);
   answersRef.current = userAnswers;
-  const questionsRef = useRef(examQuestions);
-  questionsRef.current = examQuestions;
+  const paperRef = useRef(paper);
+  paperRef.current = paper;
 
   const handleSubmitExam = useCallback(() => {
-    if (submittedRef.current) return;
+    const p = paperRef.current;
+    if (submittedRef.current || !p) return;
     submittedRef.current = true;
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    const list = questionsRef.current;
-    const answers = answersRef.current;
-    const totalQuestions = list.length;
-    let correctCount = 0;
-    const answerRecords: UserAnswerRecord[] = [];
-    const now = Date.now();
-    const timeSpentSeconds = Math.max(1, Math.round((now - examStartTimeRef.current) / 1000));
-
-    list.forEach((q) => {
-      const ans = answers[q.id] || '';
-      const evalResult = evaluateAnswer(ans, q);
-      if (evalResult.isCorrect) correctCount++;
-      answerRecords.push({
-        questionId: q.id,
-        question: q,
-        userAnswer: ans,
-        isCorrect: evalResult.isCorrect,
-        timeSpentSeconds: Math.round(timeSpentSeconds / totalQuestions),
-        evaluation: evalResult,
-        timestamp: now,
-      });
-    });
-
-    const score = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
-
-    onFinishExam({
-      id: `EXAM-${Date.now().toString(36).toUpperCase()}`,
-      title: `Unit ${config.units.join(' & ')} 模拟考试`,
-      unit: config.units.length === 1 ? config.units[0] : 'all',
-      timestamp: now,
-      totalQuestions,
-      correctCount,
-      incorrectCount: totalQuestions - correctCount,
-      score,
-      accuracy: score,
-      timeSpentSeconds,
-      answers: answerRecords,
-    });
-  }, [config.units, onFinishExam]);
-
-  const submitRef = useRef(handleSubmitExam);
-  submitRef.current = handleSubmitExam;
-
-  // Initialize exam question bank (selection logic unchanged)
-  useEffect(() => {
-    let pool = questions.filter((q) => config.units.includes(q.unit));
-    if (config.order === 'random') pool = [...pool].sort(() => Math.random() - 0.5);
-    const count = config.questionCount > 0 ? config.questionCount : pool.length;
-    pool = pool.slice(0, count);
-
-    setExamQuestions(pool);
-    setCurrentIndex(0);
-    setUserAnswers({});
-    setFlagged({});
-    submittedRef.current = false;
-    examStartTimeRef.current = Date.now();
-
-    if (config.timed) {
-      setTimeRemainingSeconds((config.timeLimitMinutes || 15) * 60);
-      timerRef.current = setInterval(() => {
-        setTimeRemainingSeconds((prev) => {
-          if (prev <= 1) {
-            if (timerRef.current) clearInterval(timerRef.current);
-            setTimeout(() => submitRef.current(), 0);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+    saveActiveExam(null);
+    try {
+      onFinishExam(gradeExam({ paper: p, answers: answersRef.current, startedAt: startedAtRef.current, config, units }));
+    } catch (e) {
+      submittedRef.current = false;
+      setResumeNotice((e as Error).message);
     }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+  }, [config, units, onFinishExam]);
+
+  // Build (or resume) the paper once.
+  useEffect(() => {
+    submittedRef.current = false;
+    if (resume && resume.paper) {
+      const { paper: p, missing } = resealExamPaper(resume.paper, questions);
+      setPaper(p);
+      setUserAnswers(resume.answers || {});
+      setFlagged(resume.flagged || {});
+      setCurrentIndex(Math.min(resume.currentIndex || 0, Math.max(0, p.questions.length - 1)));
+      startedAtRef.current = resume.startedAt;
+      deadlineRef.current = resume.deadline;
+      setResumeNotice(
+        missing > 0
+          ? `已恢复未完成的考试。${missing} 道题因题库中已被删除而移除。`
+          : '已恢复未完成的考试，作答与剩余时间均已保留。'
+      );
+    } else {
+      const selected = selectExamQuestions(questions, config);
+      const p = createExamPaper(selected);
+      setPaper(p);
+      setUserAnswers({});
+      setFlagged({});
+      setCurrentIndex(0);
+      startedAtRef.current = Date.now();
+      deadlineRef.current = config.timed ? startedAtRef.current + (config.timeLimitMinutes || 15) * 60_000 : null;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, questions]);
+  }, []);
+
+  // Clock — derived from a fixed deadline so a refresh never resets the timer.
+  useEffect(() => {
+    if (!paper || deadlineRef.current === null) return;
+    const t = setInterval(() => {
+      const n = Date.now();
+      setNow(n);
+      if (deadlineRef.current !== null && n >= deadlineRef.current) {
+        clearInterval(t);
+        handleSubmitExam();
+      }
+    }, 1000);
+    if (Date.now() >= deadlineRef.current) handleSubmitExam();
+    return () => clearInterval(t);
+  }, [paper, handleSubmitExam]);
+
+  // Persist progress (public paper + own answers only).
+  useEffect(() => {
+    if (!paper || submittedRef.current || paper.questions.length === 0) return;
+    const state: ActiveExamState = {
+      version: 1,
+      paper,
+      config,
+      answers: userAnswers,
+      flagged,
+      currentIndex,
+      startedAt: startedAtRef.current,
+      deadline: deadlineRef.current,
+      savedAt: Date.now(),
+    };
+    saveActiveExam(state);
+  }, [paper, userAnswers, flagged, currentIndex, config]);
+
+  const examQuestions = paper?.questions ?? [];
+  const questionsRef = useRef(examQuestions);
+  questionsRef.current = examQuestions;
 
   const go = useCallback(
     (i: number) => setCurrentIndex(Math.max(0, Math.min(questionsRef.current.length - 1, i))),
     []
   );
 
-  // Keyboard: Esc exit · ←/→ navigate (when not typing) · Alt+F flag
+  // Keyboard: Esc exit · ←/→ navigate (when not typing)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (showSubmitModal || showExitModal || sheetOpen) return;
@@ -145,6 +152,8 @@ export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onF
     return () => window.removeEventListener('keydown', onKey);
   }, [currentIndex, go, showSubmitModal, showExitModal, sheetOpen]);
 
+  if (!paper) return null;
+
   if (examQuestions.length === 0) {
     return (
       <div className="mx-auto max-w-md px-4 pt-24">
@@ -153,7 +162,14 @@ export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onF
             cloze
             title="没有符合考试条件的试题"
             action={
-              <Button variant="primary" onClick={onExit}>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  saveActiveExam(null);
+                  discardAnswerKey(paper.examId);
+                  onExit();
+                }}
+              >
                 返回首页
               </Button>
             }
@@ -164,13 +180,15 @@ export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onF
   }
 
   const currentQ = examQuestions[currentIndex];
-  const answeredCount = examQuestions.filter((q) => userAnswers[q.id]?.trim()).length;
+  const answeredCount = examQuestions.filter((q) => userAnswers[q.questionId]?.trim()).length;
   const unansweredCount = examQuestions.length - answeredCount;
-  const flaggedCount = examQuestions.filter((q) => flagged[q.id]).length;
+  const flaggedCount = examQuestions.filter((q) => flagged[q.questionId]).length;
+  const timeRemainingSeconds = deadlineRef.current === null ? 0 : Math.max(0, Math.ceil((deadlineRef.current - now) / 1000));
+  const unitNames = config.unitIds.map((id) => unitLabel(units, id));
   const minutes = Math.floor(timeRemainingSeconds / 60);
   const seconds = timeRemainingSeconds % 60;
   const timerStr = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-  const isTimeCritical = config.timed && timeRemainingSeconds <= 120;
+  const isTimeCritical = deadlineRef.current !== null && timeRemainingSeconds <= 120;
   const isLast = currentIndex === examQuestions.length - 1;
 
   const sheet = (
@@ -196,14 +214,14 @@ export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onF
           </Button>
           <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
             <span className="hidden truncate text-[13px] font-medium text-ink-2 sm:block">
-              模拟考试 · Unit {config.units.join(', ')}
+              模拟考试 · {unitNames.join(' · ')}
             </span>
             <LinearProgress value={answeredCount / examQuestions.length} className="flex-1" />
             <span className="num shrink-0 text-[13px] text-ink-2">
               已答 <span className="font-medium text-ink">{answeredCount}</span>/{examQuestions.length}
             </span>
           </div>
-          {config.timed && (
+          {deadlineRef.current !== null && (
             <span
               className={`num inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold transition-colors ${
                 isTimeCritical ? 'bg-danger-soft text-danger' : 'bg-sunken text-ink'
@@ -224,45 +242,58 @@ export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onF
       <div className="mx-auto grid max-w-[1120px] gap-10 px-5 pb-44 pt-[clamp(32px,9vh,96px)] sm:px-8 lg:grid-cols-[minmax(0,1fr)_260px]">
         {/* ------------------------------------------------------------ Question */}
         <div className="min-w-0">
+          <AnimatePresence>
+            {resumeNotice && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="mb-8 flex items-start justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3 text-[13px] text-ink-2 shadow-xs"
+                role="status"
+              >
+                <span>{resumeNotice}</span>
+                <button onClick={() => setResumeNotice(null)} className="text-ink-3 hover:text-ink" aria-label="关闭提示">
+                  <X className="h-4 w-4" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
           <AnimatePresence mode="wait" initial={false}>
-            <motion.div key={currentQ.id + currentIndex} variants={questionVariants} initial="initial" animate="animate" exit="exit">
+            <motion.div key={currentQ.questionId + currentIndex} variants={questionVariants} initial="initial" animate="animate" exit="exit">
               <div className="mb-6 flex items-center justify-between gap-3 sm:mb-8">
                 <div className="flex items-center gap-x-2.5 text-[12.5px] text-ink-3">
                   <span className="eyebrow !text-ink-2">
                     Question {String(currentIndex + 1).padStart(2, '0')}
                   </span>
-                  <span>Unit {currentQ.unit}</span>
+                  <span>{unitLabel(units, currentQ.unitId)}</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() => setFlagged((p) => ({ ...p, [currentQ.id]: !p[currentQ.id] }))}
-                    aria-pressed={!!flagged[currentQ.id]}
+                    onClick={() => setFlagged((p) => ({ ...p, [currentQ.questionId]: !p[currentQ.questionId] }))}
+                    aria-pressed={!!flagged[currentQ.questionId]}
                     className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium transition-colors ${
-                      flagged[currentQ.id] ? 'bg-warning-soft text-warning-ink' : 'text-ink-3 hover:bg-sunken hover:text-ink'
+                      flagged[currentQ.questionId] ? 'bg-warning-soft text-warning-ink' : 'text-ink-3 hover:bg-sunken hover:text-ink'
                     }`}
                   >
-                    <motion.span key={String(!!flagged[currentQ.id])} initial={{ rotate: -20, scale: 0.7 }} animate={{ rotate: 0, scale: 1 }} transition={spring.snappy}>
-                      <Flag className={`h-3.5 w-3.5 ${flagged[currentQ.id] ? 'fill-current' : ''}`} />
+                    <motion.span key={String(!!flagged[currentQ.questionId])} initial={{ rotate: -20, scale: 0.7 }} animate={{ rotate: 0, scale: 1 }} transition={spring.snappy}>
+                      <Flag className={`h-3.5 w-3.5 ${flagged[currentQ.questionId] ? 'fill-current' : ''}`} />
                     </motion.span>
-                    {flagged[currentQ.id] ? '已标记' : '标记存疑'}
+                    {flagged[currentQ.questionId] ? '已标记' : '标记存疑'}
                   </button>
-                  <SpeakButton question={{ ...currentQ, correctAnswer: 'blank' }} />
+                  <SpeakButton text={currentQ.sentence.replace('_____', 'blank')} />
                 </div>
               </div>
 
               <ClozeLine
                 question={currentQ}
-                value={userAnswers[currentQ.id] || ''}
-                onChange={(val) => setUserAnswers((prev) => ({ ...prev, [currentQ.id]: val }))}
+                value={userAnswers[currentQ.questionId] || ''}
+                onChange={(val) => setUserAnswers((prev) => ({ ...prev, [currentQ.questionId]: val }))}
                 onEnter={() => (isLast ? setShowSubmitModal(true) : go(currentIndex + 1))}
                 inputRef={inputRef}
                 enterKeyHint={isLast ? 'done' : 'next'}
                 placeholder="输入单词"
               />
-              <div className="mt-5 text-[13px] text-ink-3">
-                原形 <span className="font-serif text-[15px] italic text-ink-2">{currentQ.word}</span>
-              </div>
-              <p className="mt-10 text-[12.5px] text-ink-3">考试过程中不显示对错，交卷后统一评分。</p>
+              <p className="mt-8 text-[12.5px] text-ink-3">考试过程中不显示对错、原形或解析，交卷后统一评分。</p>
             </motion.div>
           </AnimatePresence>
         </div>
@@ -358,7 +389,9 @@ export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onF
         onCancel={() => setShowExitModal(false)}
         onConfirm={() => {
           setShowExitModal(false);
-          if (timerRef.current) clearInterval(timerRef.current);
+          submittedRef.current = true;
+          saveActiveExam(null);
+          discardAnswerKey(paper.examId);
           onExit();
         }}
       />
@@ -367,7 +400,7 @@ export const ExamSession: React.FC<ExamSessionProps> = ({ questions, config, onF
 };
 
 const AnswerSheet: React.FC<{
-  questions: VocabularyQuestion[];
+  questions: PublicExamQuestion[];
   answers: Record<string, string>;
   flagged: Record<string, boolean>;
   current: number;
@@ -387,20 +420,20 @@ const AnswerSheet: React.FC<{
     </div>
     <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-8 lg:grid-cols-5">
       {questions.map((q, i) => {
-        const has = Boolean(answers[q.id]?.trim());
+        const has = Boolean(answers[q.questionId]?.trim());
         const isCur = i === current;
         return (
           <button
-            key={q.id}
+            key={q.questionId}
             onClick={() => onPick(i)}
-            aria-label={`第 ${i + 1} 题${has ? '，已作答' : ''}${flagged[q.id] ? '，存疑' : ''}`}
+            aria-label={`第 ${i + 1} 题${has ? '，已作答' : ''}${flagged[q.questionId] ? '，存疑' : ''}`}
             aria-current={isCur ? 'step' : undefined}
             className={`num relative flex h-9 items-center justify-center rounded-md text-[12.5px] font-medium transition-[background-color,color,box-shadow] duration-hover ${
               has ? 'bg-ink text-canvas' : 'bg-sunken text-ink-2 hover:bg-line'
             } ${isCur ? 'ring-2 ring-accent ring-offset-2 ring-offset-surface dark:ring-offset-elevated' : ''}`}
           >
             {i + 1}
-            {flagged[q.id] && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-warning ring-2 ring-surface" />}
+            {flagged[q.questionId] && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-warning ring-2 ring-surface" />}
           </button>
         );
       })}

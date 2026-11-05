@@ -35,6 +35,16 @@
 
 ---
 
+## 🤖 LexiMaster 3.0 · AI 自适应学习
+
+- **多模型接入**：OpenAI / Anthropic Claude / Google Gemini / OpenAI 兼容接口，经同源服务端代理转发；API Key 默认只存在内存中。详见 [docs/AI.md](docs/AI.md)。
+- **AI 智能出题**：按所选单元与目标词实时造句，小批量预取、可取消、超时与限流处理；每道题通过结构、词形、防泄题与确定性评分自检后才可作答，失败自动回退题库原题。
+- **AI 答案解析**：先由原有评分引擎判定对错，再由 AI 讲解错误类型（拼写/时态/单复数/词性/搭配/其他）、语法知识与记忆建议，AI 不能改变评分。
+- **AI 学习分析**：程序先根据真实作答记录计算统计数据，AI 只做解读；数据不足时明确提示；建议可一键生成专项训练。
+- **动态单元管理**：单元数量不再受限；支持新建、改名、排序、导入、归档、回收站与二次确认的永久删除；旧版 Unit 1–4 数据自动迁移（迁移前完整备份）。
+- **考试防泄题**：考试期间只向界面提供公开题面（编号、句子、中文提示），答案键与评分逻辑隔离；支持刷新后恢复考试与剩余时间。
+- 架构、数据结构与迁移方案见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ## ✨ LexiMaster 2.0 · 视觉与交互重构
 
 - **设计语言 "Editorial Calm"**：Newsreader 衬线承载英文句子与标题，Inter 承载界面；暖白纸面（浅色）与多层 Charcoal（深色）分别独立设计。
@@ -49,18 +59,24 @@
 
 ## 🚀 启动与使用指南
 
-### 1. 运行本地开发服务器
-在项目根目录运行：
-```bash
-npm run dev
-```
-打开浏览器访问：`http://localhost:5173/`
+需要 Node.js 18.17 或更高版本。
 
-### 2. 构建生产静态包
+### 1. 本地开发
+```bash
+npm install
+npm run dev          # http://localhost:5173 ，AI 代理已随开发服务器一起启动
+npm test             # 运行自动化测试
+```
+
+### 2. 生产部署（含 AI 功能）
 ```bash
 npm run build
+npm start            # 默认 http://127.0.0.1:8787 ，可用 PORT / HOST 环境变量调整
 ```
-打包输出位于 `dist/` 目录，可直接托管于任何静态托管服务（如 Nginx、Vercel、Netlify 或 GitHub Pages）。
+`npm start` 会同时提供前端页面与 `/api` AI 代理，可部署到任何能运行 Node 的平台（云服务器、Render、Railway、Fly.io 等），建议放在 HTTPS 反向代理之后。可选的服务端托管密钥等配置见 `.env.example`。
+
+### 3. 纯静态部署
+`dist/` 仍可直接托管到 GitHub Pages / Netlify 等静态服务，但这种方式没有服务端代理，**AI 功能不可用**（设置页会提示），其余功能完全正常。
 
 ---
 
